@@ -1591,6 +1591,27 @@ class SpaceMouseDaemon(object):
             return device
         return VirtualDevice(path=self.args.uinput)
 
+    def probe_uinput(self):
+        """Report whether /dev/uinput could be opened, without opening it.
+
+        Done once at startup so `spacemouse-ctl status` and the bar widget can
+        say "denied" straight away, instead of staying quiet until the first
+        window with an emulated profile happens to take focus.
+        """
+        if self.args.dry_run or self.device.is_open:
+            return
+        path = self.args.uinput
+        if not os.path.exists(path):
+            self.uinput_state = "error"
+            self.uinput_detail = "%s does not exist (modprobe uinput)" % path
+        elif not os.access(path, os.W_OK):
+            self.uinput_state = "denied"
+            self.uinput_detail = "%s is not writable by this user" % path
+        else:
+            self.uinput_state = "closed"
+            self.uinput_detail = ""
+        self.status_dirty = True
+
     def ensure_uinput(self):
         """Open the virtual device lazily, and keep retrying if it is denied.
 
@@ -1840,10 +1861,13 @@ class SpaceMouseDaemon(object):
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._on_signal)
 
+        self.probe_uinput()
         self.log(
             "started, %d profiles, status in %s"
             % (len(self.profile_set.profiles), self.status_path)
         )
+        if self.uinput_state in ("denied", "error"):
+            self.log("%s, so the emulated profiles will stay idle" % self.uinput_detail)
         last = time.monotonic()
         last_config_check = last
         last_status = 0.0
