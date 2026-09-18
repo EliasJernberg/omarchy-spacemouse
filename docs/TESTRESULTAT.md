@@ -7,13 +7,13 @@ spacenavd 1.3.x, SpaceMouse Pro) 2026-09-18.
 
 ## 1. Automatiska tester
 
-`python3 tests/run.py`: **126 tester, alla gröna, 2.3 s**. Enbart standard-
+`python3 tests/run.py`: **129 tester, alla gröna, 2.3 s**. Enbart standard-
 biblioteket, ingen av dem rör kärnan, den körande daemonen eller skrivbordet.
 
 | Fil | Antal | Vad det täcker |
 |-----|-------|----------------|
 | `test_protocol.py` | 8 | spacenavds ramformat mot en verklig hårdvaruinspelning |
-| `test_profiles.py` | 39 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
+| `test_profiles.py` | 42 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
 | `test_gestures.py` | 35 | gestmaskinen: dominant grupp, tryck/släpp, idle-release, profilbyte |
 | `test_uinput.py` | 27 | ioctl-nummer, structstorlekar, eventbytes, rättighetsfel |
 | `test_replay.py` | 17 | hela daemonprocessen end to end plus kontrollsocketen |
@@ -118,6 +118,12 @@ Dessutom ändrades starten: daemonen låg en kort stund på fallbackprofilen inn
 Hyprland hunnit svara, vilket armerade gesterna mot vilket fönster som helst.
 Nu hålls allt av tills det första fokussvaret kommit, med tre sekunders
 grace-period om kompositorn aldrig svarar.
+
+En tredje sak syntes när en tom workspace var i fokus: Hyprland rapporterar då
+tom klass och tom titel, vilket föll igenom till fallbackprofilen. Ett tomt
+skrivbord ska inte ha några gester armerade, så det fallet är av nu. Ett fönster
+som saknar egen klass men har en titel (Oden Scope är ett sådant på den här
+maskinen) räknas fortfarande som ett fönster och får fallbacken.
 
 ### Kontrollsocketen
 

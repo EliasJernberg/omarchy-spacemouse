@@ -383,7 +383,7 @@ window and gets the fallback profile.
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 119 tests, standard library only
+python3 tests/run.py            # 129 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```
