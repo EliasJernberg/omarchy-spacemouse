@@ -7,12 +7,14 @@ spacenavd 1.3.x, SpaceMouse Pro) 2026-09-18.
 
 ## 1. Automatiska tester
 
-`python3 tests/run.py`: **129 tester, alla gröna, 2.3 s**. Enbart standard-
+`python3 tests/run.py`: **207 tester, alla gröna, 2.3 s**. Enbart standard-
 biblioteket, ingen av dem rör kärnan, den körande daemonen eller skrivbordet.
 
 | Fil | Antal | Vad det täcker |
 |-----|-------|----------------|
 | `test_protocol.py` | 8 | spacenavds ramformat mot en verklig hårdvaruinspelning |
+| `test_pointer.py` | 47 | vilka enheter som får grabbas, vad som släpps igenom, vakthunden |
+| `test_cursor.py` | 24 | markörparkering, clutch, återställning, fokusskyddet |
 | `test_profiles.py` | 42 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
 | `test_gestures.py` | 35 | gestmaskinen: dominant grupp, tryck/släpp, idle-release, profilbyte |
 | `test_uinput.py` | 27 | ioctl-nummer, structstorlekar, eventbytes, rättighetsfel |
@@ -97,7 +99,7 @@ med `hyprctl dispatch`:
 | `Opera` | `browser-threejs` | mouse |
 
 Bytet syns i `status.json` inom 0.6 s. Under samma pass dök Fusion 360 upp på
-maskinen (en annan körning), och daemonen valde `fusion-bifrost` (native) för
+maskinen (en annan körning), och daemonen valde Fusion-profilen för
 klassen `fusion360.exe` helt av sig själv. Det är alltså verifierat mot en
 riktig Fusion-fönsterklass och inte bara mot testdata.
 
@@ -182,62 +184,141 @@ orörd.
 
 ---
 
-## 3. Det som inte gick att verifiera
+## 3. Andra omgången: pekar-arbitrering, markör och Fusion
 
-**`/dev/uinput` var `crw------- root root` under hela bygget**, alltså
-root-only, och udev-regeln hade inte lagts in när arbetet avslutades. Därför är
-följande **oprövat på riktig kärna**:
+Efter att bifrost skrotats är pluginet enda vägen in för alla appar. Det här
+verifierades efter den ombyggnaden.
 
-1. att den virtuella enheten går att skapa på den här maskinen (koden är testad
-   mot ett fejk-lager, ioctl-numren mot kärnans headers, men själva
-   `open("/dev/uinput")` har bara verifierats misslyckas med EACCES, vilket
-   daemonen rapporterar som `uinput denied` precis som tänkt),
-2. att kärnan publicerar enheten som `/dev/input/eventN` med namnet
-   "Omarchy SpaceMouse" och att eventen läses tillbaka korrekt,
-3. att Hyprland och libinput accepterar en enhet som är både mus och
-   tangentbord, alltså att shift-modifierade gester verkligen registreras,
-4. apptestet i webbläsaren: att orbit, pan och zoom rör modellen åt rätt håll i
-   en Three.js-vy,
-5. därmed också att teckenkonventionerna i defaultprofilerna (vilket håll
-   rx, ry, x, z och y drar) känns rätt i handen.
+### Live: hela kedjan genom riktig kärna
 
-### Så här slutförs det
+`python3 tests/live_gesture.py --window` öppnar ett eget fönster på workspace 4,
+skapar den virtuella enheten, spelar hela hårdvaruinspelningen genom den
+riktiga gestmaskinen och läser samtidigt tillbaka allt ur enhetens
+`/dev/input/eventN`:
 
-```bash
-# 1. regeln, en gång, med sudo i en riktig terminal
-echo 'KERNEL=="uinput", MODE="0660", GROUP="uucp", OPTIONS+="static_node=uinput"' \
-  | sudo tee /etc/udev/rules.d/99-omarchy-spacemouse-uinput.rules
-# valfritt, men krävs för punkt 2 ovan (självtestet läser tillbaka enheten)
-echo 'SUBSYSTEM=="input", ATTRS{name}=="Omarchy SpaceMouse", MODE="0660", GROUP="uucp"' \
-  | sudo tee -a /etc/udev/rules.d/99-omarchy-spacemouse-uinput.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uinput
-
-# 2. kontrollera. voysys ligger redan i uucp (id -nG), och den körande
-#    daemonprocessen har gid 984 bland sina supplementary groups, så ingen
-#    utloggning och ingen omstart behövs: daemonen försöker igen var tionde
-#    sekund och tar enheten av sig själv.
-ls -l /dev/uinput          # ska vara crw-rw---- root uucp
-spacemouse-ctl status      # uinput ska gå från denied till ready
-
-# 3. självtestet: skapar enheten, spelar inspelningen, läser tillbaka
-python3 tests/live_check.py
-
-# 4. apptestet: fokusera en Three.js-vy och spela upp inspelningen i den
-systemctl --user restart omarchy-spacemouse
-# (fokusera webbläsarfönstret, ta i pucken)
+```
+1950 events i 1778 batchar emitterade
+1950 events tillbaka ur kärnan
+rel-summor ut: {REL_X: 3484, REL_Y: -3999, REL_WHEEL_HI_RES: 709, REL_WHEEL: 5}
+rel-summor in: {REL_X: 3484, REL_Y: -3999, REL_WHEEL_HI_RES: 709, REL_WHEEL: 5}
+ok   varje event kom tillbaka oförändrat ur kärnan
+ok   den relativa rörelsen summerar exakt (ingen subpixel går förlorad)
 ```
 
-Punkt 4 går också att göra utan att röra pucken. Öppna `tests/orbit_probe.html`
-(en sida utan beroenden som visar exakt vilka knappar, modifierare, pekardeltan
-och hjulsteg webbläsaren faktiskt tog emot, plus en kub som roterar, panorerar
-och zoomar), fokusera den och spela upp inspelningen mot det fokuserade
-fönstret:
+Alltså: **bit för bit identiskt in och ut**, och subpixel-ackumulatorerna
+tappar ingenting.
 
-```bash
-xdg-open tests/orbit_probe.html
-python3 daemon/spacemoused.py --no-focus --profile browser-threejs \
-  --replay tests/fixtures/hardware/calibration_capture.bin --replay-speed 4
+### Live: markören
+
+Samma körning, nio dragsessioner:
+
+```
+9 drag-sessioner, 14 clutchar
+ok   drag 1..9 parkerade pekaren mitt i fönstret
+ok   drag 1..9 satte tillbaka pekaren där den var
+ok   pekaren står där den började: (1280, 733)
+ok   ett långt drag clutchade i stället för att gå in i skärmkanten
 ```
 
-Om något drar åt fel håll är det ett teckenbyte i `gain` för den axeln i
-`~/.config/omarchy-spacemouse/profiles.json`, se avsnittet Tuning i README.
+Varje enskilt drag verifierades med exakta koordinater: positionen direkt efter
+warpen jämförs med fönstrets mittpunkt, och positionen efter gestslut jämförs
+med den sparade positionen. Inga ungefärligheter.
+
+Dispatcher-syntaxen på Omarchy 4 är Lua: `hl.dsp.cursor.move({ x = .., y = .. })`.
+`hyprctl keyword` fungerar inte alls här ("keyword can't work with non-legacy
+parsers"), så platt acceleration sätts med
+`hyprctl eval hl.device({ name = "omarchy-spacemouse-1", accel_profile = "flat" })`,
+mot det namn Hyprland faktiskt använder för enheten just då.
+
+### Live: riktig 3D-app
+
+three.js orbit controls (threejs.org/examples/#misc_controls_orbit) öppnad i
+Opera på workspace 4, en orbit-burst på 1.2 s, grim-skärmdumpar av fönstret
+före och efter: kameran har tydligt roterat runt scenen, konerna ligger i ett
+annat mönster och ljussättningen har vridit sig. Fönstret hölls fokuserat i
+**9.7 sekunder** totalt, sedan stängdes det och Elias fokus och workspace
+återställdes.
+
+Dessförinnan kördes samma sak mot `tests/orbit_probe.html`, som visar exakt vad
+webbläsaren tog emot:
+
+```
+moves 673   dx 2427   dy -3975   wheel -550
+yaw 198.8   pitch 786.8   zoom 4.00   pan 1930,-2008
+```
+
+### Pekar-arbitreringen skarpt
+
+Daemonen hittar rätt enhet av sig själv. Loggen vid första musprofilen:
+
+```
+cannot read Logitech PRO X, so the mouse stays on its own: add the udev rule
+  from the README (SUBSYSTEM=="input", ENV{ID_INPUT_MOUSE}=="1")
+virtual device 'Omarchy SpaceMouse' created as input34
+acceleration set to flat for omarchy-spacemouse-1
+```
+
+Den valde alltså ut `Logitech PRO X` (som udev kallar `ID_SERIAL=Logitech_USB_Receiver`)
+och sorterade bort allt annat: 3Dconnexion-pucken (`ID_INPUT_3D_MOUSE`),
+DualSense-touchpaden, Ducky-tangentbordets musgränssnitt och sin egen virtuella
+enhet. Statusen blev `pointer: shared (no permission)` och daemonen fortsatte
+precis som förut, vilket är kravet.
+
+`UI_GET_SYSNAME` används för att veta exakt vilken `inputN` som är vår egen.
+Det är enda pålitliga sättet: namnet är inte unikt (en andra instans heter
+likadant) och eventnumret är vad som råkade vara ledigt.
+
+### Två avsteg från beställningen, båda medvetna
+
+1. **Grabben hålls bara under en gest**, inte hela tiden. En permanent grab
+   skulle skicka all musrörelse genom en enhet med platt accelerationsprofil,
+   alltså skulle musen kännas annorlunda hela dagen i stället för bara under
+   ett drag. `pointer_grab: "always"` ger det ursprungliga beteendet.
+2. **Aktiveringströskeln är inte helt borta, den flyttade till råa counts.**
+   Med enbart deadzone 18 startade vilonivåerna gester av sig själva: den här
+   puckens vilobrus når 20 counts på rx. Nu gäller hysteres i den enhet Elias
+   kan mäta med `--dump`: starta vid 24, håll ner till 18.
+
+---
+
+## 4. Det som återstår
+
+Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
+den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")
+och allt i avsnitt 3 ovan kördes mot riktig kärna. Det som fanns i den här
+listan tidigare är därmed avklarat.
+
+Kvar finns en sak, och den kräver root:
+
+### Musens eventnod är inte läsbar än
+
+Pekar-arbitreringen kan inte ta över musen förrän dess `/dev/input/eventN` går
+att öppna. Just nu är alla musnoder `root:input 0660` och voysys är inte i
+gruppen `input`, så daemonen rapporterar `pointer: shared (no permission)`,
+loggar regeln en gång och fortsätter precis som förut. Allt annat fungerar.
+
+```bash
+echo 'SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", MODE="0660", GROUP="uucp"' \
+  | sudo tee /etc/udev/rules.d/99-omarchy-spacemouse-pointer.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=input
+ls -l /dev/input/event13     # ska bli crw-rw---- root uucp (Logitech PRO X)
+spacemouse-ctl status        # pointer ska gå till: proxied (Logitech PRO X)
+```
+
+Ingen utloggning behövs: voysys ligger redan i `uucp` och daemonprocessen bär
+gid 984, så den tar noden inom tre sekunder av sig själv.
+
+Verifiera sedan, med musen i handen och pucken i den andra: rör båda samtidigt
+i en 3D-vy. Musens rörelse ska inte längre smeta in i puckens drag, medan
+musknappar och hjul fortfarande fungerar. `spacemouse-ctl pointer shared` är
+nödutgången om något känns fel, och den släpper musen omedelbart.
+
+### Det bara Elias kan avgöra
+
+Hastighet och kurva är smaksak och står som exakta rattar i README:
+`pointer_speed` (900, ändra 200 i taget) och `curve` (1.3, ändra 0.2 i taget) i
+`~/.config/omarchy-spacemouse/profiles.json`. Filen läses om inom en sekund, så
+det går att justera med 3D-vyn öppen.
+
+Fusion-profilens FIT-knapp står avsiktligt tom: binder han en tangent för
+"fit to view" i Fusion är det bara att skriva in den i `fit_key`.
