@@ -7,13 +7,13 @@ spacenavd 1.3.x, SpaceMouse Pro) 2026-09-18.
 
 ## 1. Automatiska tester
 
-`python3 tests/run.py`: **125 tester, alla gröna, 2.2 s**. Enbart standard-
+`python3 tests/run.py`: **126 tester, alla gröna, 2.3 s**. Enbart standard-
 biblioteket, ingen av dem rör kärnan, den körande daemonen eller skrivbordet.
 
 | Fil | Antal | Vad det täcker |
 |-----|-------|----------------|
 | `test_protocol.py` | 8 | spacenavds ramformat mot en verklig hårdvaruinspelning |
-| `test_profiles.py` | 38 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
+| `test_profiles.py` | 39 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
 | `test_gestures.py` | 35 | gestmaskinen: dominant grupp, tryck/släpp, idle-release, profilbyte |
 | `test_uinput.py` | 27 | ioctl-nummer, structstorlekar, eventbytes, rättighetsfel |
 | `test_replay.py` | 17 | hela daemonprocessen end to end plus kontrollsocketen |
@@ -101,7 +101,23 @@ maskinen (en annan körning), och daemonen valde `fusion-bifrost` (native) för
 klassen `fusion360.exe` helt av sig själv. Det är alltså verifierat mot en
 riktig Fusion-fönsterklass och inte bara mot testdata.
 
-Elias fokus återställdes till samma fönster och workspace som före testet.
+Fokus återställdes till samma fönster och workspace som före testet.
+
+### Två buggar som bara den skarpa körningen hittade
+
+1. **Omarchys egna TUI-fönster fick musprofilen.** Efter en omstart råkade ett
+   fönster med klassen `org.omarchy.terminal` vara fokuserat, och eftersom
+   `desktop-off` bara listade terminalemulatorerna vid namn föll det igenom till
+   fallbacken `default`, alltså mittenknappsorbit i en terminal. Hela prefixet
+   `org.omarchy.` täcks nu, med ett test på köpet.
+2. **Loggraden kunde namnge fel fönster.** Profilraden läste fönsterklassen
+   efter beslutet, så ett fokusbyte däremellan gav en logg som påstod att till
+   exempel `browser-threejs` valdes för klassen `foot`. Klassen läses först nu.
+
+Dessutom ändrades starten: daemonen låg en kort stund på fallbackprofilen innan
+Hyprland hunnit svara, vilket armerade gesterna mot vilket fönster som helst.
+Nu hålls allt av tills det första fokussvaret kommit, med tre sekunders
+grace-period om kompositorn aldrig svarar.
 
 ### Kontrollsocketen
 
