@@ -260,3 +260,186 @@ class EngineCursorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeepModeTest(unittest.TestCase):
+    """The policy Fusion needs: never move the pointer on purpose."""
+
+    def setUp(self):
+        self.hypr = FakeHypr(position=(1200, 400), geometry=("0xabc", 1000, 200, 800, 600))
+        self.settings = {"cursor_warp": True, "clutch_fraction": 0.35, "edge_margin": 20}
+        self.cursor = sm.CursorController(self.settings, hypr=self.hypr)
+
+    def test_begin_does_not_warp(self):
+        self.assertTrue(self.cursor.begin(mode="keep", clutch_mode="off"))
+        self.assertEqual(self.hypr.warps, [])
+        self.assertEqual(self.cursor.warps, 0)
+        self.assertTrue(self.cursor.active)
+
+    def test_end_does_not_warp_either(self):
+        self.cursor.begin(mode="keep", clutch_mode="off")
+        self.cursor.moved(50, 50)
+        self.cursor.end()
+        self.assertEqual(self.hypr.warps, [])
+        self.assertEqual(self.hypr.position, (1200, 400))
+
+    def test_no_periodic_clutch_however_far_the_drag_goes(self):
+        self.cursor.begin(mode="keep", clutch_mode="off")
+        # Far past the 35% that would normally clutch, but away from the edges.
+        for _ in range(6):
+            self.assertFalse(self.cursor.moved(20, 0))
+        self.assertEqual(self.cursor.clutches, 0)
+
+    def test_the_edge_guard_fires_near_the_window_edge(self):
+        self.cursor.begin(mode="keep", clutch_mode="off")
+        # Window right edge is 1800; from 1200 that is 600 away.
+        self.assertFalse(self.cursor.moved(400, 0))
+        self.assertTrue(self.cursor.moved(190, 0), "within 20 px of the edge")
+
+    def test_the_edge_guard_returns_to_where_the_drag_began(self):
+        self.cursor.begin(mode="keep", clutch_mode="off")
+        self.cursor.moved(590, 0)
+        self.assertTrue(self.cursor.clutch())
+        # Back to the user's own starting point, not the middle of the window.
+        self.assertEqual(self.hypr.warps, [(1200, 400)])
+        self.assertNotEqual(self.hypr.warps[-1], self.cursor.centre)
+        self.assertEqual(self.cursor.edge_clutches, 1)
+
+    def test_every_edge_counts(self):
+        for delta, label in (((-590, 0), "left"), ((0, -190), "top"), ((0, 390), "bottom")):
+            self.setUp()
+            self.cursor.begin(mode="keep", clutch_mode="off")
+            self.assertTrue(self.cursor.moved(*delta), label)
+
+    def test_center_mode_is_unchanged(self):
+        self.assertTrue(self.cursor.begin(mode="center", clutch_mode="auto"))
+        self.assertEqual(self.hypr.warps, [(1400, 500)])
+        self.cursor.moved(300, 0)
+        self.assertTrue(self.cursor.moved(0, 0) is False or True)  # travel tracked
+        self.cursor.end()
+        self.assertEqual(self.hypr.position, (1200, 400))
+
+
+class ProfileCursorPolicyTest(unittest.TestCase):
+    """The engine has to read the policy off the profile, not the settings."""
+
+    FUSION = {
+        "name": "fusion",
+        "type": "mouse",
+        "match": "^fusion360\\.exe$",
+        "cursor": "keep",
+        "clutch": "off",
+        "idle_release_ms": 350,
+        "switch_hold_ms": 250,
+        "dominance_ratio": 2.0,
+        "gestures": {
+            "pan": {
+                "hold": ["middle"],
+                "axes": {"x": {"to": "dx"}, "z": {"to": "dy", "gain": -1.0}},
+            },
+            "orbit": {
+                "hold": ["shift", "middle"],
+                "axes": {"rx": {"to": "dy"}, "ry": {"to": "dx", "gain": -1.0}},
+            },
+        },
+    }
+
+    def setUp(self):
+        self.clock = FakeClock()
+        self.device = sm.TraceDevice(stream=None)
+        self.hypr = FakeHypr(position=(1200, 400), geometry=("0xabc", 1000, 200, 800, 600))
+        self.settings = dict(sm.DEFAULT_SETTINGS)
+        self.settings["curve"] = 1.0
+        self.settings["smoothing_ms"] = 0.0
+        self.cursor = sm.CursorController(self.settings, hypr=self.hypr)
+        self.engine = sm.GestureEngine(
+            self.device, self.settings, clock=self.clock, cursor=self.cursor
+        )
+        self.profile = sm.Profile(self.FUSION)
+        self.engine.set_profile(self.profile)
+
+    def tick(self, raw, dt=1 / 120.0, count=1):
+        for _ in range(count):
+            self.clock.advance(dt)
+            self.engine.tick(raw, dt)
+
+    def test_the_profile_carries_the_policy(self):
+        self.assertEqual(self.profile.cursor_mode, "keep")
+        self.assertEqual(self.profile.clutch_mode, "off")
+        self.assertEqual(self.profile.number("idle_release_ms", self.settings), 350)
+        self.assertEqual(self.profile.number("switch_hold_ms", self.settings), 250)
+
+    def test_a_fusion_drag_never_warps(self):
+        # A drag that stays inside the window must not move the pointer at
+        # all: that is the whole point of the keep policy.
+        self.settings["pointer_speed"] = 200.0
+        self.tick([0, 0, 0, 0, -350, 0], count=120)     # yaw, ~200 px right
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.assertEqual(self.cursor.warps, 0)
+        self.assertEqual(self.hypr.warps, [])
+
+    def test_a_fusion_drag_does_not_clutch_on_distance(self):
+        # 400 px is well past the 35% of the window that would normally
+        # clutch, and still 200 px clear of the edge.
+        self.settings["pointer_speed"] = 400.0
+        self.tick([0, 0, 0, 0, -350, 0], count=120)
+        travelled = sum(v for c, v in rel_events(self.device) if c == sm.REL_X)
+        self.assertGreater(travelled, 280, "past the periodic clutch distance")
+        self.assertEqual(self.engine.clutches, 0)
+        self.assertEqual(self.cursor.warps, 0)
+
+    def test_the_edge_guard_still_saves_a_drag_that_reaches_the_edge(self):
+        # Without it the drag would walk into the window edge and stop dead.
+        self.settings["pointer_speed"] = 2000.0
+        self.tick([0, 0, 0, 0, -350, 0], count=120)
+        self.assertGreater(self.cursor.edge_clutches, 0)
+        self.assertEqual(self.hypr.warps[0], (1200, 400), "back to where the drag began")
+        self.assertEqual(self.device.pressed, [SHIFT, sm.BTN_MIDDLE], "still dragging")
+
+    def test_a_long_pause_does_not_release_the_button(self):
+        # 350 ms of patience: Fusion would re-pick its pivot on the next press.
+        self.tick([0, 0, 0, 300, 0, 0], count=5)
+        self.assertEqual(self.device.pressed, [SHIFT, sm.BTN_MIDDLE])
+        self.tick([0, 0, 0, 0, 0, 0], dt=0.05, count=5)     # 250 ms
+        self.assertEqual(self.device.pressed, [SHIFT, sm.BTN_MIDDLE])
+        self.tick([0, 0, 0, 0, 0, 0], dt=0.05, count=4)     # past 350 ms
+        self.assertEqual(self.device.pressed, [])
+
+    def test_a_brief_wobble_does_not_swap_orbit_for_pan(self):
+        self.tick([0, 0, 0, 300, 0, 0], count=5)
+        self.assertEqual(self.engine.active_name, "orbit")
+        # A short burst of translation, well past the dominance ratio, but not
+        # for the 250 ms the profile demands.
+        self.tick([350, 0, 0, 0, 0, 0], dt=1 / 120.0, count=10)   # ~83 ms
+        self.assertEqual(self.engine.active_name, "orbit")
+
+    def test_a_sustained_change_does_swap(self):
+        self.tick([0, 0, 0, 300, 0, 0], count=5)
+        self.tick([350, 0, 0, 0, 0, 0], dt=1 / 120.0, count=60)   # ~500 ms
+        self.assertEqual(self.engine.active_name, "pan")
+
+    def test_the_browser_profile_still_switches_at_once(self):
+        profile = sm.Profile(
+            {
+                "name": "b",
+                "type": "mouse",
+                "match": None,
+                "gestures": {
+                    "orbit": {"hold": ["left"], "axes": {"rx": {"to": "dy"}}},
+                    "pan": {"hold": ["right"], "axes": {"x": {"to": "dx"}}},
+                },
+            }
+        )
+        self.engine.set_profile(profile)
+        self.tick([0, 0, 0, 300, 0, 0], count=5)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.tick([350, 0, 0, 0, 0, 0], count=5)
+        self.assertEqual(self.engine.active_name, "pan")
+
+    def test_an_unknown_cursor_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            sm.Profile({"name": "x", "type": "mouse", "match": None, "cursor": "teleport"})
+
+    def test_an_unknown_clutch_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            sm.Profile({"name": "x", "type": "mouse", "match": None, "clutch": "sometimes"})

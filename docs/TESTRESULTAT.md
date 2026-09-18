@@ -7,14 +7,14 @@ spacenavd 1.3.x, SpaceMouse Pro) 2026-09-18.
 
 ## 1. Automatiska tester
 
-`python3 tests/run.py`: **207 tester, alla gröna, 2.3 s**. Enbart standard-
+`python3 tests/run.py`: **227 tester, alla gröna, 2.4 s**. Enbart standard-
 biblioteket, ingen av dem rör kärnan, den körande daemonen eller skrivbordet.
 
 | Fil | Antal | Vad det täcker |
 |-----|-------|----------------|
 | `test_protocol.py` | 8 | spacenavds ramformat mot en verklig hårdvaruinspelning |
 | `test_pointer.py` | 47 | vilka enheter som får grabbas, vad som släpps igenom, vakthunden |
-| `test_cursor.py` | 24 | markörparkering, clutch, återställning, fokusskyddet |
+| `test_cursor.py` | 41 | markörparkering, keep-läget, clutch, kantskydd, per-profil-policy |
 | `test_profiles.py` | 42 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
 | `test_gestures.py` | 35 | gestmaskinen: dominant grupp, tryck/släpp, idle-release, profilbyte |
 | `test_uinput.py` | 27 | ioctl-nummer, structstorlekar, eventbytes, rättighetsfel |
@@ -281,7 +281,79 @@ likadant) och eventnumret är vad som råkade vara ledigt.
 
 ---
 
-## 4. Det som återstår
+## 4. Tredje omgången: Fusions pivot
+
+Elias testade Fusion-profilen och modellen hoppade iväg från centrum vid
+geststart. Orsaken: **Fusion väljer sin orbit-pivot ur det som ligger under
+markören** när knappen går ner. Vår warp till fönstermitt plus clutch-omtryck
+lät Fusion välja om pivoten hela tiden.
+
+### Vad som ändrades
+
+Per-profil-policy i stället för en global inställning:
+
+| Inställning | Fusion | Övriga |
+|-------------|--------|--------|
+| `cursor` | `keep` (ingen warp alls) | `center` (parkera i fönstermitt) |
+| `clutch` | `off` (bara kantskydd) | `auto` (var 35 % av fönstret) |
+| `idle_release_ms` | 350 | 80 |
+| `switch_hold_ms` | 250 | 0 |
+| `dominance_ratio` | 2.0 | 1.35 |
+
+Kantskyddet i `clutch: off` warpar tillbaka till **markörens startposition**,
+inte till fönstermitten, så pivoten hamnar där användaren valde den.
+
+Elva inställningar går nu att sätta per profil, plus de två policyerna.
+
+### Verifiering
+
+**Torrkörning med fusion-profilen**, replay av hela hårdvaruinspelningen i 12
+sekunder (`--dry-run --profile fusion --replay ... --replay-loop`), avläst ur
+statusfilen:
+
+```
+profile        fusion
+cursor_mode    keep
+cursor_warps   0
+clutches       0
+edge_clutches  0
+```
+
+Alltså **ingen enda cursor.move och ingen clutch**, vilket var kravet.
+
+**Enhetstester**: 41 i `test_cursor.py`, bland annat att ett drag som håller
+sig inne i fönstret inte warpar alls, att ett drag på 400 px (långt förbi de
+35 % som annars clutchar) inte clutchar, att kantskyddet ändå räddar ett drag
+som når kanten och då warpar till startpunkten, att en paus på 250 ms inte
+släpper knappen men 350 ms gör det, och att en kort wobble mot pan inte byter
+gest medan en ihållande gör det.
+
+### Pekar-arbitreringen skarpt
+
+Udev-regeln för musen kom på plats under passet, så `/dev/input/event13` är
+läsbar nu. `python3 tests/live_pointer.py` verifierar hela mekaniken mot riktig
+kärna **utan att röra hans egen mus**: en andra uinput-enhet får agera fysisk
+mus och `pointer_include` pekar ut den, medan Logitech-musen är explicit
+utesluten.
+
+```
+watching: ['Omarchy SpaceMouse Test Pointer']
+ok   the stand-in is watched and the real mouse is not
+ok   nothing is forwarded outside a gesture: the kernel is delivering it directly
+ok   its motion was swallowed (2 events dropped)
+ok   its buttons still came through: [(EV_KEY, BTN_TASK, 1), (EV_KEY, BTN_TASK, 0)]
+ok   the mouse was handed straight back
+ok   a stalled main loop released the grab
+```
+
+Mätningen görs på händelseströmmen, inte på markörpositionen: markören delas
+med den som sitter vid datorn, och Elias flyttade sin mus mitt i testet, vilket
+gjorde positionsmätning meningslös. Händelseräknarna och avläsningen ur vår
+egen enhets nod är exakta oavsett vad han gör.
+
+---
+
+## 5. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")
@@ -290,28 +362,24 @@ listan tidigare är därmed avklarat.
 
 Kvar finns en sak, och den kräver root:
 
-### Musens eventnod är inte läsbar än
+### Musen och pucken samtidigt, i handen
 
-Pekar-arbitreringen kan inte ta över musen förrän dess `/dev/input/eventN` går
-att öppna. Just nu är alla musnoder `root:input 0660` och voysys är inte i
-gruppen `input`, så daemonen rapporterar `pointer: shared (no permission)`,
-loggar regeln en gång och fortsätter precis som förut. Allt annat fungerar.
+Udev-regeln är inlagd (Elias la in den under passet) och mekaniken är
+verifierad mot riktig kärna med en stand-in-mus. Kvar är själva handgreppet:
+håll musen i ena handen och pucken i den andra i en 3D-vy och rör båda
+samtidigt. Musens rörelse ska inte längre smeta in i puckens drag, medan
+musknappar och hjul fortfarande fungerar.
 
-```bash
-echo 'SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", MODE="0660", GROUP="uucp"' \
-  | sudo tee /etc/udev/rules.d/99-omarchy-spacemouse-pointer.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=input
-ls -l /dev/input/event13     # ska bli crw-rw---- root uucp (Logitech PRO X)
-spacemouse-ctl status        # pointer ska gå till: proxied (Logitech PRO X)
-```
+`spacemouse-ctl pointer shared` är nödutgången om något känns fel, och den
+släpper musen omedelbart. Samma sak finns som knapp i panelen.
 
-Ingen utloggning behövs: voysys ligger redan i `uucp` och daemonprocessen bär
-gid 984, så den tar noden inom tre sekunder av sig själv.
+### Fusion-profilen med Fusion öppet
 
-Verifiera sedan, med musen i handen och pucken i den andra: rör båda samtidigt
-i en 3D-vy. Musens rörelse ska inte längre smeta in i puckens drag, medan
-musknappar och hjul fortfarande fungerar. `spacemouse-ctl pointer shared` är
-nödutgången om något känns fel, och den släpper musen omedelbart.
+Fusion kördes av Elias under hela passet, så inga syntetiska drag skickades mot
+den. `cursor: keep` och `clutch: off` är verifierade i torrkörning och i
+enhetstester, men hur pivoten känns i handen kan bara han avgöra. Lägg markören
+på modellen först, ta sedan i pucken.
+
 
 ### Det bara Elias kan avgöra
 

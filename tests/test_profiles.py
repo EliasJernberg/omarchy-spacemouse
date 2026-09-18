@@ -61,6 +61,34 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertEqual(gestures["zoom"].mode, "wheel")
 
+    def test_fusion_never_moves_the_pointer(self):
+        # Fusion reads the pointer to pick its orbit pivot, so warping it
+        # makes the model jump away from what the user was looking at.
+        profile = self.select("fusion360.exe")
+        self.assertEqual(profile.cursor_mode, "keep")
+        self.assertEqual(profile.clutch_mode, "off")
+
+    def test_fusion_is_patient(self):
+        profile = self.select("fusion360.exe")
+        settings = self.profiles.settings
+        # A short pause must not release the button: the next press would let
+        # Fusion choose a new pivot.
+        self.assertEqual(profile.number("idle_release_ms", settings), 350)
+        # And a wobble must not swap orbit for pan, for the same reason.
+        self.assertEqual(profile.number("switch_hold_ms", settings), 250)
+        self.assertGreaterEqual(profile.number("dominance_ratio", settings), 2.0)
+
+    def test_other_profiles_keep_the_global_numbers(self):
+        settings = self.profiles.settings
+        for name in ("browser-threejs", "default"):
+            profile = self.profiles.by_name(name)
+            self.assertEqual(profile.cursor_mode, "center")
+            self.assertEqual(profile.clutch_mode, "auto")
+            self.assertEqual(
+                profile.number("idle_release_ms", settings),
+                float(settings["idle_release_ms"]),
+            )
+
     def test_fusion_has_no_fit_key_bound(self):
         # There is no shortcut under Wine that can be relied on, so the FIT
         # button is deliberately inert rather than wrong.

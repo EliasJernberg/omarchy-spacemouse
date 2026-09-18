@@ -73,6 +73,23 @@ UEV_RAWAXIS = 5
 UEV_RAWBUTTON = 6
 
 AXES = ("x", "y", "z", "rx", "ry", "rz")
+
+# Settings any single profile may set for itself. An application's feel is its
+# own business: Fusion wants a long idle release and a slow gesture switch,
+# a browser wants neither.
+PROFILE_OVERRIDABLE = (
+    "idle_release_ms",
+    "switch_hold_ms",
+    "dominance_ratio",
+    "pointer_speed",
+    "wheel_speed",
+    "smoothing_ms",
+    "clutch_fraction",
+    "engage_deadzone",
+    "deadzone",
+    "curve",
+    "sensitivity",
+)
 DEFAULT_SPNAV_SOCKET = "/run/spnav.sock"
 
 
@@ -803,6 +820,13 @@ DEFAULT_SETTINGS = {
     # window.
     "cursor_warp": True,
     "clutch_fraction": 0.35,
+    # How close to the window edge a drag may get before the edge guard picks
+    # the pointer up, in a profile that does its own clutching (clutch: off).
+    "edge_margin": 20.0,
+    # How long a competing gesture must stay dominant before it takes over.
+    # Zero switches immediately; a profile that re-reads the world on every
+    # button change wants some patience here.
+    "switch_hold_ms": 0.0,
     "flat_acceleration": True,
     # Pointer arbitration: "proxied" takes the physical mice over so they
     # cannot fight the puck mid-drag, "shared" leaves them alone.
@@ -900,6 +924,25 @@ class Profile(object):
         if pattern not in (None, "", "*"):
             self.regex = re.compile(str(pattern), re.IGNORECASE)
         self.description = str(spec.get("description") or "")
+        # How the pointer is treated while this profile drags. "center" parks
+        # it in the middle of the window, "keep" never moves it: some
+        # applications read the pointer to decide what the drag means.
+        self.cursor_mode = str(spec.get("cursor") or "center")
+        if self.cursor_mode not in ("center", "keep"):
+            raise ValueError(
+                "profile '%s' has unknown cursor mode '%s'" % (self.name, self.cursor_mode)
+            )
+        self.clutch_mode = str(spec.get("clutch") or "auto")
+        if self.clutch_mode not in ("auto", "off"):
+            raise ValueError(
+                "profile '%s' has unknown clutch mode '%s'" % (self.name, self.clutch_mode)
+            )
+        # Settings a profile may override for itself. Everything else comes
+        # from the global block.
+        self.overrides = {}
+        for key in PROFILE_OVERRIDABLE:
+            if key in spec:
+                self.overrides[key] = float(spec[key])
         self.icon = str(spec.get("icon") or "")
         self.fit_key = parse_combo(spec.get("fit_key")) if spec.get("fit_key") else []
         self.gestures = []
@@ -915,6 +958,12 @@ class Profile(object):
         self.buttons = {}
         for number, bspec in (spec.get("buttons") or {}).items():
             self.buttons[int(number)] = ButtonAction(bspec)
+
+    def number(self, key, settings, fallback=0.0):
+        """This profile's value for a numeric setting, or the global one."""
+        if key in self.overrides:
+            return self.overrides[key]
+        return float(settings.get(key, fallback))
 
     @property
     def is_fallback(self):
@@ -932,6 +981,8 @@ class Profile(object):
             "match": self.match_source,
             "description": self.description,
             "gestures": [g.name for g in self.gestures],
+            "cursor": self.cursor_mode,
+            "clutch": self.clutch_mode,
         }
 
 
@@ -1121,6 +1172,7 @@ class GestureEngine(object):
         self._hires = {"wheel": 0.0, "hwheel": 0.0}
         self._detent = {"wheel": 0.0, "hwheel": 0.0}
         self._smoothed = dict((axis, 0.0) for axis in AXES)
+        self._switch_candidate = None
         self._key_next = {}
         self._key_held = {}
         self._children = []  # exec actions, kept so they can be reaped
@@ -1182,9 +1234,13 @@ class GestureEngine(object):
         self.active = gesture
         self.active_since = now
         self.last_above = now
+        self._switch_candidate = None
         if warp and self.cursor is not None:
             try:
-                self.cursor.begin()
+                self.cursor.begin(
+                    mode=self.profile.cursor_mode,
+                    clutch_mode=self.profile.clutch_mode,
+                )
             except Exception as exc:  # noqa: BLE001
                 self.log("could not park the cursor: %s" % exc)
         self._press(gesture)
@@ -1220,11 +1276,11 @@ class GestureEngine(object):
             if self.active or self.device.pressed:
                 self.release_all()
             return
-        norm = (
-            profile_set.normalize(raw_axes)
-            if profile_set
-            else normalize_axes(raw_axes, self.settings)
-        )
+        settings = self.settings
+        if self.profile.overrides:
+            settings = dict(settings)
+            settings.update(self.profile.overrides)
+        norm = normalize_axes(raw_axes, settings)
         if self.profile.type == "keys":
             self._tick_keys(norm, dt)
             return
@@ -1238,7 +1294,7 @@ class GestureEngine(object):
         invisible to the hand but removes the single-sample noise that makes a
         synthetic drag look nervous. Zero turns it off.
         """
-        tau = float(self.settings.get("smoothing_ms", 30.0)) / 1000.0
+        tau = self.profile.number("smoothing_ms", self.settings, 30.0) / 1000.0
         if tau <= 0.0 or dt <= 0.0:
             self._smoothed = dict(norm)
             return dict(norm)
@@ -1259,12 +1315,14 @@ class GestureEngine(object):
         now = self.clock()
         settings = self.settings
         raw = raw or {}
-        engage = float(settings.get("engage_deadzone", 24.0))
+        profile = self.profile
+        engage = profile.number("engage_deadzone", settings, 24.0)
         norm = self.smooth(norm, dt)
         activate = float(settings.get("activate_threshold", 0.0))
         release = float(settings.get("release_threshold", 0.0))
-        idle = float(settings.get("idle_release_ms", 80.0)) / 1000.0
-        ratio = float(settings.get("dominance_ratio", 1.35))
+        idle = profile.number("idle_release_ms", settings, 80.0) / 1000.0
+        ratio = profile.number("dominance_ratio", settings, 1.35)
+        switch_hold = profile.number("switch_hold_ms", settings, 0.0) / 1000.0
 
         # Wheel groups run on their own, alongside whatever drag is happening.
         # Zooming while orbiting is what a real 3Dconnexion driver does, and
@@ -1300,14 +1358,30 @@ class GestureEngine(object):
                 self.last_above = now
             elif now - self.last_above >= idle:
                 self._deactivate()
-            if (
+            contested = (
                 self.active is not None
                 and startable
                 and best is not self.active
                 and best_magnitude > current * ratio
-            ):
+            )
+            if not contested:
+                self._switch_candidate = None
+            elif switch_hold > 0.0:
+                # Some applications treat every button change as a new drag
+                # and re-read the world when it happens, so a wobble between
+                # orbit and pan is expensive. Make the competitor prove it.
+                if (
+                    self._switch_candidate is None
+                    or self._switch_candidate[0] is not best
+                ):
+                    self._switch_candidate = (best, now)
+                    contested = False
+                elif now - self._switch_candidate[1] < switch_hold:
+                    contested = False
+            if contested:
                 # Orbit to pan and back is a change of button, not a new drag:
                 # the pointer stays where it is, so the view does not jump.
+                self._switch_candidate = None
                 self._deactivate(unwarp=False)
                 self._activate(best, now, warp=False)
         if self.active is None and startable:
@@ -1319,8 +1393,8 @@ class GestureEngine(object):
 
     def _emit(self, gesture, norm, dt):
         settings = self.settings
-        pointer_speed = float(settings.get("pointer_speed", 900.0))
-        wheel_speed = float(settings.get("wheel_speed", 3.0))
+        pointer_speed = self.profile.number("pointer_speed", settings, 900.0)
+        wheel_speed = self.profile.number("wheel_speed", settings, 3.0)
         hi_res_enabled = bool(settings.get("wheel_hi_res", True))
         dx = 0.0
         dy = 0.0
@@ -1598,16 +1672,23 @@ def hypr_set_flat_acceleration(name_prefix="omarchy-spacemouse"):
 
 
 class CursorController(object):
-    """Keeps a drag inside the window, and puts the pointer back afterwards.
+    """Decides where the pointer sits during a drag, in one of two ways.
 
-    This is the part that makes the puck feel like a puck rather than like a
-    mouse being shoved around. A drag starts by parking the pointer in the
-    middle of the window the user is looking at, so there is room to move in
-    every direction; when the drag ends the pointer goes back where it was, as
-    if it had never left. A long drag would still reach a screen edge and die
-    there, so once it has travelled about a third of the window the button is
-    lifted, the pointer is recentred and the button goes down again: a clutch,
-    the same trick a hand does on a steering wheel.
+    **center**, the default, parks the pointer in the middle of the focused
+    window when a drag starts, drives from there, and puts it back afterwards.
+    A long drag would still reach a screen edge and die there, so once it has
+    travelled about a third of the window the button is lifted, the pointer is
+    recentred and the button goes down again: a clutch, the same trick a hand
+    does on a steering wheel.
+
+    **keep** leaves the pointer exactly where the user put it and never warps
+    on purpose. This exists because some applications read the pointer to
+    decide what a drag means. Fusion picks its orbit pivot from whatever is
+    under the cursor at the moment the button goes down, so parking the
+    pointer in the middle of the window (and picking it up again at every
+    clutch) makes the model jump away from where the user was looking. In this
+    mode the only warp left is the edge guard: a drag that is about to run off
+    the window gets one jump back to where it began, so it can keep going.
     """
 
     def __init__(self, settings=None, log=None, hypr=None):
@@ -1619,10 +1700,16 @@ class CursorController(object):
         self.geometry = None
         self.address = ""
         self.centre = None
+        self.origin = None          # where the drag started, in screen coords
+        self.at = None              # where the pointer is now, tracked
         self.travel_x = 0.0
         self.travel_y = 0.0
         self.active = False
+        self.mode = "center"
+        self.clutch_mode = "auto"
         self.clutches = 0
+        self.warps = 0
+        self.edge_clutches = 0
         self.available = True
 
     # -- the Hyprland calls, in one place so a test can replace them --------
@@ -1649,15 +1736,19 @@ class CursorController(object):
     def enabled(self):
         return bool(self.settings.get("cursor_warp", True))
 
-    def begin(self):
-        """Save where the pointer is and park it in the middle of the window."""
+    def begin(self, mode="center", clutch_mode="auto"):
+        """Start a drag session under one of the two cursor policies."""
         self.active = False
         self.saved = None
         self.geometry = None
         self.centre = None
+        self.origin = None
+        self.at = None
         self.address = ""
         self.travel_x = 0.0
         self.travel_y = 0.0
+        self.mode = str(mode or "center")
+        self.clutch_mode = str(clutch_mode or "auto")
         if not self.enabled:
             return False
         geometry = self.hypr.geometry_of_focus()
@@ -1665,14 +1756,50 @@ class CursorController(object):
             return False
         self.address, x, y, width, height = geometry
         self.geometry = (x, y, width, height)
-        self.saved = self.hypr.cursor_position()
         self.centre = (x + width // 2, y + height // 2)
-        if not self.hypr.warp(*self.centre):
+        position = self.hypr.cursor_position()
+
+        if self.mode == "keep":
+            # Not a single warp on the way in. The application is entitled to
+            # read the pointer and decide what the drag means, and moving it
+            # would answer that question with the wrong place.
+            self.origin = position
+            self.at = position
+            self.active = True
+            return True
+
+        self.saved = position
+        if not self.warp_to(self.centre):
             self.saved = None
             self.centre = None
             return False
+        self.origin = self.centre
+        self.at = self.centre
         self.active = True
         return True
+
+    def warp_to(self, point):
+        if point is None:
+            return False
+        if self.hypr.warp(*point):
+            self.warps += 1
+            self.at = tuple(point)
+            return True
+        return False
+
+    def near_edge(self):
+        """Is the pointer about to run off the window it is dragging in?"""
+        if self.at is None or self.geometry is None:
+            return False
+        margin = float(self.settings.get("edge_margin", 20.0))
+        x, y, width, height = self.geometry
+        at_x, at_y = self.at
+        return (
+            at_x - x <= margin
+            or (x + width) - at_x <= margin
+            or at_y - y <= margin
+            or (y + height) - at_y <= margin
+        )
 
     def moved(self, dx, dy):
         """Feed the emitted motion in. True when the drag needs a clutch."""
@@ -1680,6 +1807,12 @@ class CursorController(object):
             return False
         self.travel_x += dx
         self.travel_y += dy
+        if self.at is not None:
+            self.at = (self.at[0] + dx, self.at[1] + dy)
+        if self.clutch_mode == "off":
+            # No periodic clutching. The edge guard is all that is left, and
+            # it only fires when the drag would otherwise stop dead.
+            return self.near_edge()
         fraction = float(self.settings.get("clutch_fraction", 0.35))
         _, _, width, height = self.geometry
         return (
@@ -1688,27 +1821,43 @@ class CursorController(object):
         )
 
     def clutch(self):
-        """Recentre mid-drag. The caller lifts and presses the buttons."""
-        if not self.active or self.centre is None:
+        """Pick the pointer up mid-drag. The caller lifts and presses the buttons.
+
+        Where it lands depends on the policy: back to the middle of the window
+        when the drag is being driven from there, and back to where the drag
+        began when the pointer is the user's own, since that is the only place
+        the application's idea of the drag is still correct.
+        """
+        if not self.active:
+            return False
+        target = self.origin if self.clutch_mode == "off" else self.centre
+        if target is None:
             return False
         self.travel_x = 0.0
         self.travel_y = 0.0
         self.clutches += 1
-        return self.hypr.warp(*self.centre)
+        if self.clutch_mode == "off":
+            self.edge_clutches += 1
+        return self.warp_to(target)
 
     def end(self):
         """Put the pointer back, and the focus with it."""
         if not self.active:
             self.active = False
             return False
-        saved, address = self.saved, self.address
+        mode, saved, address = self.mode, self.saved, self.address
         self.active = False
         self.saved = None
         self.centre = None
+        self.origin = None
+        self.at = None
         self.geometry = None
+        if mode == "keep":
+            # Nothing was moved, so there is nothing to put back.
+            return False
         if saved is None:
             return False
-        warped = self.hypr.warp(*saved)
+        warped = self.warp_to(saved)
         # follow_mouse is on by default, so landing the pointer back on some
         # other window would hand it the focus. Take it back if that happened.
         if warped and address:
@@ -2817,6 +2966,9 @@ class SpaceMouseDaemon(object):
             "pointer_mode": self.pointer_mode,
             "pointer_devices": self.pointer.device_names if self.pointer else [],
             "clutches": self.engine.clutches if self.engine else 0,
+            "cursor_mode": self.current_profile.cursor_mode,
+            "cursor_warps": self.cursor.warps if self.cursor else 0,
+            "edge_clutches": self.cursor.edge_clutches if self.cursor else 0,
             "last_event": round(self.last_event, 3),
             "config": self.args.config,
             "config_error": self.profile_set.error,

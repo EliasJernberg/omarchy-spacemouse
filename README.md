@@ -135,11 +135,42 @@ To see a window's class: `hyprctl activewindow -j | jq -r .class`.
 | `browser-threejs` | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
 | `default`         | everything else                                | mouse  |
 
-Fusion has its own profile because its mouse conventions are backwards from
-everyone else's: in Fusion the middle button **pans** and shift plus middle
-**orbits**, where every other viewer does it the other way round. Its FIT
-button is deliberately unbound, because no fit-to-view shortcut can be relied
-on under Wine; put one in `fit_key` if you bind one yourself.
+Fusion has its own profile for two reasons.
+
+Its mouse conventions are backwards from everyone else's: in Fusion the middle
+button **pans** and shift plus middle **orbits**, where every other viewer does
+it the other way round. Its FIT button is deliberately unbound, because no
+fit-to-view shortcut can be relied on under Wine; put one in `fit_key` if you
+bind one yourself.
+
+And **Fusion picks its orbit pivot from whatever is under the pointer** at the
+moment the button goes down. Nothing under the pointer means it falls back to
+the camera target, which after a pan is often nowhere near the model. So the
+default behaviour of parking the pointer in the middle of the window, and
+picking it up again at every clutch, made the model jump away from whatever
+the user was looking at, repeatedly. The Fusion profile therefore never moves
+the pointer at all:
+
+```json
+"cursor": "keep",          // never warp: the pointer is the pivot
+"clutch": "off",           // no periodic recentring, only the edge guard
+"idle_release_ms": 350,    // a pause must not release the button
+"switch_hold_ms": 250,     // nor may a wobble swap orbit for pan
+"dominance_ratio": 2.0
+```
+
+**In practice: put the pointer on the part of the model you want to turn
+around, then take hold of the puck.** That is the same thing you would do with
+a mouse in Fusion, and it is the only way to choose a pivot from outside the
+application. Real automatic centring (orbit around the model, wherever the
+pointer is) needs a plug-in on Fusion's own side that can call its camera API;
+nothing an input daemon does can reach that.
+
+The idle release and switch hold are there for the same reason. Every press of
+the orbit button is a fresh pivot choice, so the profile is deliberately slow
+to let go and slow to change its mind: a short pause mid-orbit keeps the
+button down, and a brief wobble toward pan does not swap the button out and
+back.
 
 `desktop-off` is a safety rail rather than a rule: the `default` profile holds
 the **middle button** while orbiting, and in a terminal a middle click pastes
@@ -197,6 +228,22 @@ A synthetic drag has a problem a real mouse does not: it starts wherever the
 pointer happens to be, and a long drag walks into a screen edge and stops. Both
 are handled, and the handling is what makes the puck feel like a puck.
 
+There are two policies, set per profile with `"cursor"`:
+
+| `cursor`  | what happens                                                       |
+|-----------|--------------------------------------------------------------------|
+| `center`  | the default: park in the middle of the window, drive, put it back  |
+| `keep`    | never move the pointer. For applications that read it themselves   |
+
+and two clutch policies, set with `"clutch"`:
+
+| `clutch` | what happens                                                        |
+|----------|---------------------------------------------------------------------|
+| `auto`   | the default: recentre after `clutch_fraction` of the window         |
+| `off`    | no periodic recentring. The edge guard still saves a drag that is about to run off the window, by jumping back to where the drag began |
+
+Under `center`:
+
 - **Parking.** When a drag starts, the pointer is saved and moved to the middle
   of the focused window, so there is room in every direction.
 - **Putting it back.** When the drag ends, the pointer goes back exactly where
@@ -211,7 +258,9 @@ are handled, and the handling is what makes the puck feel like a puck.
   distance.
 
 Switching between orbit and pan mid-drag is a change of button, not a new drag:
-nothing is warped, so the view does not jump.
+nothing is warped, so the view does not jump. A profile can make that switch
+harder to trigger with `switch_hold_ms`, which is the number of milliseconds a
+competing gesture has to stay dominant before it takes over.
 
 Turn the lot off with `"cursor_warp": false`, or `--no-cursor-warp` for one run.
 
@@ -373,8 +422,16 @@ Everything in `settings` applies to every profile:
 | `flat_acceleration`  | true    | set the virtual device to flat acceleration at startup.           |
 | `pointer_mode`       | proxied | `shared` leaves the physical mice alone entirely.                 |
 | `pointer_grab`       | gesture | `always` holds the grab the whole time instead.                   |
+| `edge_margin`        | 20      | how close to the window edge the edge guard fires, in pixels.     |
+| `switch_hold_ms`     | 0       | how long a competitor must stay dominant before taking over.      |
 | `activate_threshold` | 0.0     | extra gate on the normalized magnitude. Normally left at zero.    |
 | `release_threshold`  | 0.0     | same, for keeping a gesture alive.                                |
+
+Any profile can set these for itself, and the profile's value wins:
+`idle_release_ms`, `switch_hold_ms`, `dominance_ratio`, `pointer_speed`,
+`wheel_speed`, `smoothing_ms`, `clutch_fraction`, `engage_deadzone`,
+`deadzone`, `curve`, `sensitivity`, plus the `cursor` and `clutch` policies.
+An application's feel is its own business.
 
 **The two dials worth your time.** Everything else has a defensible default;
 these two are personal and nobody else can pick them for you:
@@ -479,7 +536,14 @@ with the reason when it is not.
 
 **The pointer jumps to the middle of the window when I use the puck.**
 That is the parking, and it is deliberate: it is what gives a drag room to run
-and what real 3D mouse drivers do. `"cursor_warp": false` turns it off.
+and what real 3D mouse drivers do. Set `"cursor": "keep"` on that profile if
+the application would rather read the pointer itself, or `"cursor_warp": false`
+to turn it off everywhere.
+
+**The model jumps away from the middle when I start to orbit.**
+The application is choosing its pivot from what is under the pointer, the way
+Fusion does. Give that profile `"cursor": "keep"` and `"clutch": "off"`, then
+put the pointer on the model before taking hold of the puck.
 
 **Logs**: `journalctl --user -u omarchy-spacemouse -f`
 
@@ -488,7 +552,7 @@ and what real 3D mouse drivers do. `"cursor_warp": false` turns it off.
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 207 tests, standard library only
+python3 tests/run.py            # 227 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```
