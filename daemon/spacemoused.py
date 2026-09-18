@@ -1549,6 +1549,9 @@ class SpaceMouseDaemon(object):
         self.manual_profile = None  # name of a manual override
         self.started_at = time.monotonic()
         self.focus_known = False
+        # Until a focus reading says otherwise, assume there is a window: the
+        # replay and --no-focus paths never get one.
+        self.has_window = True
         self.window_class = ""
         self.window_title = ""
         self.current_profile = OFF_PROFILE
@@ -1654,6 +1657,13 @@ class SpaceMouseDaemon(object):
                 "manual profile '%s' is gone, back to automatic" % self.manual_profile
             )
             self.manual_profile = None
+        if not self.has_window:
+            # Hyprland reports an empty class and an empty title when focus
+            # lands nowhere. There is nothing to emit into on a bare
+            # workspace, and the fallback profile would otherwise arm the
+            # gestures there. A window with no class of its own still has a
+            # title, and does get the fallback.
+            return OFF_PROFILE
         return self.profile_set.select(window_class)
 
     def desired_profile(self):
@@ -1674,6 +1684,7 @@ class SpaceMouseDaemon(object):
 
     def on_focus(self, window_class, title):
         self.focus_known = True
+        self.has_window = bool(window_class or title)
         if window_class == self.window_class and title == self.window_title:
             return
         self.window_class = window_class

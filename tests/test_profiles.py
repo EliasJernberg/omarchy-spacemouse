@@ -368,6 +368,23 @@ class FocusGraceTest(unittest.TestCase):
         self.assertTrue(daemon.focus_is_known())
         self.assertEqual(daemon.select_for("Opera").name, "browser-threejs")
 
+    def test_an_empty_workspace_emits_nothing(self):
+        daemon = self.daemon()
+        daemon.on_focus("", "")          # Hyprland's "activewindow>>," 
+        self.assertIs(daemon.select_for(""), sm.OFF_PROFILE)
+
+    def test_a_window_without_a_class_still_gets_the_fallback(self):
+        # Some applications set no app_id at all, but they do have a title.
+        daemon = self.daemon()
+        daemon.on_focus("", "Oden Scope")
+        self.assertEqual(daemon.select_for("").name, "default")
+
+    def test_a_manual_override_wins_over_an_empty_workspace(self):
+        daemon = self.daemon()
+        daemon.on_focus("", "")
+        daemon.manual_profile = "browser-threejs"
+        self.assertEqual(daemon.select_for("").name, "browser-threejs")
+
     def test_disabled_beats_everything(self):
         daemon = self.daemon("--no-focus")
         daemon.enabled = False

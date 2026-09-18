@@ -371,10 +371,10 @@ the Hyprland event socket is not connected, and the daemon falls back to the
 **Middle-clicking pastes in my terminal.**
 The terminal is getting a `mouse` profile. Add its class to `desktop-off`.
 
-**An empty workspace gets the `default` mouse profile.**
-With no window focused there is no class to match, so the fallback profile
-applies. Give the fallback `"type": "off"` if you would rather the puck were
-quiet on an empty desktop.
+**Which profile does an empty workspace get?**
+None. With focus on no window at all, nothing is emitted. A window that sets
+no class of its own is a different case: it has a title, so it counts as a
+window and gets the fallback profile.
 
 **Logs**: `journalctl --user -u omarchy-spacemouse -f`
 
