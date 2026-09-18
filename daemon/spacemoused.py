@@ -507,7 +507,7 @@ class VirtualDevice(EventSink):
             fd = self.io.open(self.path)
         except OSError as exc:
             reason = "denied" if exc.errno in (errno.EACCES, errno.EPERM) else "error"
-            raise UinputUnavailable("cannot open %s: %s" % (self.path, exc), reason)
+            raise UinputUnavailable("cannot open %s: %s" % (self.path, exc), reason) from exc
         try:
             self._configure(fd)
         except OSError as exc:
@@ -515,7 +515,7 @@ class VirtualDevice(EventSink):
                 self.io.close(fd)
             except OSError:
                 pass
-            raise UinputUnavailable("cannot set up %s: %s" % (self.path, exc), "error")
+            raise UinputUnavailable("cannot set up %s: %s" % (self.path, exc), "error") from exc
         self.fd = fd
         self.pressed = []
         self._pending = []
