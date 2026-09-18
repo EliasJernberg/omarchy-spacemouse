@@ -369,9 +369,11 @@ Deadzone too low. See Tuning, step 1. Recentre the puck (`spacenavd` does that
 at startup) before measuring.
 
 **The profile does not change when I switch windows.**
-`spacemouse-ctl status` shows the window class the daemon sees. If it is empty,
-the Hyprland event socket is not connected, and the daemon falls back to the
-`default` profile. The daemon reconnects on its own every two seconds.
+`spacemouse-ctl status` shows the window class the daemon sees and whether
+`hyprland` is connected. If it is disconnected, the daemon retries every two
+seconds, and after a three second grace period it falls back to the fallback
+profile so a session without a compositor still works. Check also that `mode`
+says `auto`: a manual override pins one profile until `spacemouse-ctl auto`.
 
 **Middle-clicking pastes in my terminal.**
 The terminal is getting a `mouse` profile. Add its class to `desktop-off`.
