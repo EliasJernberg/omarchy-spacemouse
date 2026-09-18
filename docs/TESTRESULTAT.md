@@ -140,6 +140,29 @@ disk, reloading", profillistan blev sex poster och det fokuserade
 foot-fönstret bytte till den nya profilen. Efter att filen återställts gick
 allt tillbaka.
 
+### Webbläsarprofilen genom hela kedjan
+
+Samma inspelning spelad genom `browser-threejs` i stället för `default` ger
+högerknapp för pan och vänsterknapp för orbit, hjul för zoom, och noll knappar
+kvar nedtryckta:
+
+```
+BTN_LEFT 2, BTN_RIGHT 2, REL_X 32, REL_Y 41, REL_WHEEL_HI_RES 11
+sekvens: RIGHT ner, RIGHT upp, LEFT ner, LEFT upp
+```
+
+FIT-knappen loggar att profilen saknar `fit_key`, vilket är meningen: det finns
+ingen allmän "zooma till allt"-tangent i en webbläsare.
+
+### install.sh och uninstall.sh
+
+`install.sh` kördes tre gånger totalt, `uninstall.sh` en gång mot ett sandlåde-
+HOME. Det avslöjade en bugg: raden "removed the plugin" skrevs ut även när
+borttagningen misslyckades, eftersom den låg efter kommandot i stället för i en
+else-gren. Fixat. Efter testet kördes `install.sh` igen och allt var tillbaka:
+tjänsten enabled och active, symlänken på plats, pluginet kvar, profilfilen
+orörd.
+
 ### Bar-widgeten
 
 - `omarchy plugin validate .` går igenom.
