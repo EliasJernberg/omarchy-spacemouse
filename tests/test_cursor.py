@@ -17,9 +17,12 @@ SHIFT = sm.KEY_NAMES["KEY_LEFTSHIFT"]
 class FakeHypr(object):
     """Stands in for the compositor: remembers where the pointer went."""
 
-    def __init__(self, position=(100, 100), geometry=("0xabc", 1000, 500, 800, 600)):
+    def __init__(self, position=(100, 100), geometry=("0xabc", 1000, 500, 800, 600),
+                 area=None):
         self.position = position
         self.geometry = geometry
+        self.area = area
+        self.clock = 1000.0
         self.warps = []
         self.focused = geometry[0] if geometry else ""
         self.focus_calls = []
@@ -40,6 +43,18 @@ class FakeHypr(object):
 
     def geometry_of_focus(self):
         return self.geometry
+
+    def drag_area(self):
+        # The area a drag is measured against: the largest window of the
+        # focused class, not whichever palette happens to have focus.
+        if self.area is not None:
+            return self.area
+        if self.geometry is None:
+            return None
+        return self.geometry + ("window",)
+
+    def now(self):
+        return self.clock
 
     def active_address(self):
         return self.focused
@@ -290,14 +305,22 @@ class KeepModeTest(unittest.TestCase):
             self.assertFalse(self.cursor.moved(20, 0))
         self.assertEqual(self.cursor.clutches, 0)
 
-    def test_the_edge_guard_fires_near_the_window_edge(self):
+    def test_the_edge_guard_is_off_by_default_in_keep_mode(self):
+        # The pointer is the user's to place in this mode, so the edge is
+        # theirs too. Anything else is a warp they did not ask for.
         self.cursor.begin(mode="keep", clutch_mode="off")
+        self.assertFalse(self.cursor.edge_guard)
+        self.assertFalse(self.cursor.moved(590, 0), "right at the edge, still no clutch")
+        self.assertEqual(self.hypr.warps, [])
+
+    def test_the_edge_guard_fires_near_the_window_edge_when_asked_for(self):
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
         # Window right edge is 1800; from 1200 that is 600 away.
         self.assertFalse(self.cursor.moved(400, 0))
         self.assertTrue(self.cursor.moved(190, 0), "within 20 px of the edge")
 
     def test_the_edge_guard_returns_to_where_the_drag_began(self):
-        self.cursor.begin(mode="keep", clutch_mode="off")
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
         self.cursor.moved(590, 0)
         self.assertTrue(self.cursor.clutch())
         # Back to the user's own starting point, not the middle of the window.
@@ -308,9 +331,8 @@ class KeepModeTest(unittest.TestCase):
     def test_every_edge_counts(self):
         for delta, label in (((-590, 0), "left"), ((0, -190), "top"), ((0, 390), "bottom")):
             self.setUp()
-            self.cursor.begin(mode="keep", clutch_mode="off")
+            self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
             self.assertTrue(self.cursor.moved(*delta), label)
-
     def test_center_mode_is_unchanged(self):
         self.assertTrue(self.cursor.begin(mode="center", clutch_mode="auto"))
         self.assertEqual(self.hypr.warps, [(1400, 500)])
@@ -319,6 +341,84 @@ class KeepModeTest(unittest.TestCase):
         self.cursor.end()
         self.assertEqual(self.hypr.position, (1200, 400))
 
+
+
+
+class EdgeGuardLoopTest(unittest.TestCase):
+    """The bug this was written for: 301 clutches in a single Fusion session.
+
+    A drag whose pointer sits inside the margin, or outside the area
+    altogether, used to trip the guard on every tick: warp back, still near
+    the edge, warp back again, for as long as the drag lasted.
+    """
+
+    def setUp(self):
+        self.hypr = FakeHypr(position=(1005, 400), geometry=("0xabc", 1000, 200, 800, 600))
+        self.settings = {
+            "cursor_warp": True,
+            "edge_margin": 20,
+            "edge_guard_cooldown_ms": 500,
+        }
+        self.cursor = sm.CursorController(self.settings, hypr=self.hypr)
+
+    def drag(self, seconds=5.0, dx=1, dy=0, hz=120.0):
+        """Nudge the pointer for a while, the way a held puck would."""
+        ticks = int(seconds * hz)
+        clutches = 0
+        for _ in range(ticks):
+            self.hypr.clock += 1.0 / hz
+            if self.cursor.moved(dx, dy):
+                self.cursor.clutch()
+                clutches += 1
+        return clutches
+
+    def test_a_pointer_parked_in_the_margin_does_not_loop(self):
+        # 5 px from the left edge, dragging further into it, for five seconds.
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
+        clutches = self.drag(seconds=5.0, dx=-1)
+        self.assertLessEqual(clutches, 1, "one rescue at most, not one per tick")
+        self.assertLessEqual(self.cursor.warps, 1)
+
+    def test_a_pointer_outside_the_area_does_not_loop_either(self):
+        # What a Fusion palette window did: the area is a 300x25 strip and the
+        # pointer is nowhere near it, so every position looks like an edge.
+        self.hypr.area = ("0xabc", 2613, 719, 300, 25, "window")
+        self.hypr.position = (3500, 900)
+        self.cursor = sm.CursorController(self.settings, hypr=self.hypr)
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
+        clutches = self.drag(seconds=5.0, dx=2)
+        self.assertLessEqual(clutches, 1)
+
+    def test_the_cooldown_holds_even_when_the_pointer_escapes_and_returns(self):
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
+        fired = 0
+        for _ in range(600):                      # 5 s at 120 Hz
+            self.hypr.clock += 1 / 120.0
+            # Bounce in and out of the margin as fast as possible.
+            if self.cursor.moved(-40 if fired % 2 == 0 else 40, 0):
+                self.cursor.clutch()
+                fired += 1
+        self.assertLessEqual(fired, 11, "at most one every 500 ms over five seconds")
+
+    def test_it_rearms_once_the_pointer_has_left_the_margin(self):
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
+        self.cursor.moved(-1, 0)                  # into the margin
+        self.assertTrue(self.cursor.clutch())
+        self.hypr.clock += 1.0
+        self.assertFalse(self.cursor.moved(-1, 0), "still disarmed: never left")
+        self.cursor.moved(400, 0)                 # out of the margin
+        self.cursor.moved(-400, 0)                # and back into it
+        self.assertTrue(self.cursor.moved(-1, 0), "armed again")
+
+    def test_the_clutch_moves_the_origin_with_it(self):
+        self.cursor.begin(mode="keep", clutch_mode="off", edge_guard=True)
+        self.cursor.moved(400, 0)
+        self.cursor.moved(200, 0)
+        origin_before = self.cursor.origin
+        self.cursor.clutch()
+        self.assertEqual(self.cursor.origin, origin_before,
+                         "the first clutch returns to where the drag began")
+        self.assertEqual(self.cursor.at, origin_before)
 
 class ProfileCursorPolicyTest(unittest.TestCase):
     """The engine has to read the policy off the profile, not the settings."""
@@ -388,12 +488,23 @@ class ProfileCursorPolicyTest(unittest.TestCase):
         self.assertEqual(self.engine.clutches, 0)
         self.assertEqual(self.cursor.warps, 0)
 
-    def test_the_edge_guard_still_saves_a_drag_that_reaches_the_edge(self):
-        # Without it the drag would walk into the window edge and stop dead.
+    def test_fusion_does_not_warp_even_at_the_window_edge(self):
+        # The shipped Fusion profile has the edge guard off: the pointer is
+        # the pivot, and the user is the one who placed it.
+        self.settings["pointer_speed"] = 2000.0
+        self.tick([0, 0, 0, 0, -350, 0], count=120)
+        self.assertEqual(self.cursor.edge_clutches, 0)
+        self.assertEqual(self.cursor.warps, 0)
+        self.assertEqual(self.device.pressed, [SHIFT, sm.BTN_MIDDLE], "still dragging")
+
+    def test_the_edge_guard_can_be_switched_on_for_a_profile(self):
+        profile = sm.Profile(dict(self.FUSION, edge_guard="on"))
+        self.assertTrue(profile.edge_guard)
+        self.engine.set_profile(profile)
         self.settings["pointer_speed"] = 2000.0
         self.tick([0, 0, 0, 0, -350, 0], count=120)
         self.assertGreater(self.cursor.edge_clutches, 0)
-        self.assertEqual(self.hypr.warps[0], (1200, 400), "back to where the drag began")
+        self.assertLessEqual(self.cursor.edge_clutches, 3, "not once per tick")
         self.assertEqual(self.device.pressed, [SHIFT, sm.BTN_MIDDLE], "still dragging")
 
     def test_a_long_pause_does_not_release_the_button(self):

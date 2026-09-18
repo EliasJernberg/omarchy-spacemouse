@@ -153,7 +153,8 @@ the pointer at all:
 
 ```json
 "cursor": "keep",          // never warp: the pointer is the pivot
-"clutch": "off",           // no periodic recentring, only the edge guard
+"clutch": "off",           // no periodic recentring
+"edge_guard": "off",       // and no warp at the window edge either
 "idle_release_ms": 350,    // a pause must not release the button
 "switch_hold_ms": 250,     // nor may a wobble swap orbit for pan
 "dominance_ratio": 2.0
@@ -240,7 +241,26 @@ and two clutch policies, set with `"clutch"`:
 | `clutch` | what happens                                                        |
 |----------|---------------------------------------------------------------------|
 | `auto`   | the default: recentre after `clutch_fraction` of the window         |
-| `off`    | no periodic recentring. The edge guard still saves a drag that is about to run off the window, by jumping back to where the drag began |
+| `off`    | no periodic recentring                                              |
+
+and the edge guard, `"edge_guard"`, which jumps back to where the drag began
+when the pointer is about to run off the window. It is on under `center` and
+off under `keep`, where the pointer is the user's to place, and it can be set
+either way per profile.
+
+The guard is deliberately hard to trigger: it has to be armed (the pointer has
+left the margin since it last fired), half a second has to have passed, and the
+pointer has to have moved. Without those three gates it loops, because it warps
+the pointer to a place that is itself inside the margin and then sees the same
+thing on the next tick. That is not hypothetical: it once fired 301 times in a
+single Fusion session.
+
+**What a drag is measured against** is not simply the focused window. Palettes
+and toolbars are windows too, and they carry the application's own class: Fusion
+puts a 300x25 strip and a 300x450 panel next to its 2536x1390 viewport. Measured
+against the strip, a pointer on the model is outside the window entirely and
+every position looks like an edge. So the area is the **largest mapped window of
+the focused class on that workspace**, falling back to the monitor.
 
 Under `center`:
 
@@ -423,6 +443,7 @@ Everything in `settings` applies to every profile:
 | `pointer_mode`       | proxied | `shared` leaves the physical mice alone entirely.                 |
 | `pointer_grab`       | gesture | `always` holds the grab the whole time instead.                   |
 | `edge_margin`        | 20      | how close to the window edge the edge guard fires, in pixels.     |
+| `edge_guard_cooldown_ms` | 500 | the edge guard may not fire more often than this.                 |
 | `switch_hold_ms`     | 0       | how long a competitor must stay dominant before taking over.      |
 | `activate_threshold` | 0.0     | extra gate on the normalized magnitude. Normally left at zero.    |
 | `release_threshold`  | 0.0     | same, for keeping a gesture alive.                                |
@@ -542,8 +563,16 @@ to turn it off everywhere.
 
 **The model jumps away from the middle when I start to orbit.**
 The application is choosing its pivot from what is under the pointer, the way
-Fusion does. Give that profile `"cursor": "keep"` and `"clutch": "off"`, then
-put the pointer on the model before taking hold of the puck.
+Fusion does. Give that profile `"cursor": "keep"`, `"clutch": "off"` and
+`"edge_guard": "off"`, then put the pointer on the model before taking hold of
+the puck.
+
+**The view is jittering, and the counters are climbing.**
+`spacemouse-ctl status --json` reports `cursor_warps`, `clutches` and
+`edge_clutches` separately, and the daemon logs a per gesture tally at debug
+level. Three numbers climbing together means the edge guard is firing: either
+the profile should have `"edge_guard": "off"`, or the drag area is wrong, which
+the tally line names (`area from window` or `area from monitor`).
 
 **Logs**: `journalctl --user -u omarchy-spacemouse -f`
 
@@ -552,7 +581,7 @@ put the pointer on the model before taking hold of the puck.
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 227 tests, standard library only
+python3 tests/run.py            # 235 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```

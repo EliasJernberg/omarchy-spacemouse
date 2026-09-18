@@ -63,10 +63,16 @@ class ShippedDefaultsTest(unittest.TestCase):
 
     def test_fusion_never_moves_the_pointer(self):
         # Fusion reads the pointer to pick its orbit pivot, so warping it
-        # makes the model jump away from what the user was looking at.
+        # makes the model jump away from what the user was looking at. Not
+        # once, not at a clutch, and not at the window edge either.
         profile = self.select("fusion360.exe")
         self.assertEqual(profile.cursor_mode, "keep")
         self.assertEqual(profile.clutch_mode, "off")
+        self.assertFalse(profile.edge_guard)
+
+    def test_the_other_mouse_profiles_keep_their_edge_guard(self):
+        for name in ("browser-threejs", "default"):
+            self.assertTrue(self.profiles.by_name(name).edge_guard, name)
 
     def test_fusion_is_patient(self):
         profile = self.select("fusion360.exe")

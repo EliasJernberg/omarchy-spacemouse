@@ -7,14 +7,14 @@ spacenavd 1.3.x, SpaceMouse Pro) 2026-09-18.
 
 ## 1. Automatiska tester
 
-`python3 tests/run.py`: **227 tester, alla gröna, 2.4 s**. Enbart standard-
+`python3 tests/run.py`: **235 tester, alla gröna, 2.4 s**. Enbart standard-
 biblioteket, ingen av dem rör kärnan, den körande daemonen eller skrivbordet.
 
 | Fil | Antal | Vad det täcker |
 |-----|-------|----------------|
 | `test_protocol.py` | 8 | spacenavds ramformat mot en verklig hårdvaruinspelning |
 | `test_pointer.py` | 47 | vilka enheter som får grabbas, vad som släpps igenom, vakthunden |
-| `test_cursor.py` | 41 | markörparkering, keep-läget, clutch, kantskydd, per-profil-policy |
+| `test_cursor.py` | 49 | markörparkering, keep-läget, clutch, kantskyddets loopspärr, per-profil-policy |
 | `test_profiles.py` | 42 | profilmatchning, defaultfilen, normalisering, hot reload, fokus-grace |
 | `test_gestures.py` | 35 | gestmaskinen: dominant grupp, tryck/släpp, idle-release, profilbyte |
 | `test_uinput.py` | 27 | ioctl-nummer, structstorlekar, eventbytes, rättighetsfel |
@@ -353,7 +353,70 @@ egen enhets nod är exakta oavsett vad han gör.
 
 ---
 
-## 5. Det som återstår
+## 5. Fjärde omgången: kantskyddet loopade
+
+Efter Elias Fusion-pass visade statusfilen `cursor_warps=301`, `clutches=301`,
+`edge_clutches=301`. Räknarna var inte samma räknare: de var tre olika som
+råkar öka exakt en gång var per kantclutch, så siffrorna var ärliga. Det var
+**301 verkliga kantclutchar**, en per tick så länge draget pågick.
+
+### Orsaken, båda hypoteserna stämde
+
+Fusion har tre fönster med samma klass `fusion360.exe` på workspace 5:
+
+```
+2536x1390  at 2572,38     huvudfönstret (vyn)
+ 300x450   at 2613,269    flytande panel
+ 300x25    at 2613,719    flytande list
+```
+
+`hyprctl activewindow` pekar ut det som senast fick fokus, ofta en av
+paletterna. Markören på modellen ligger då **helt utanför** det 300x25 stora
+"fönstret", och min kantkontroll räknade `at_x - x <= margin` med ett negativt
+tal, alltså alltid sant. Kantskyddet warpade tillbaka till startpositionen, som
+också låg utanför, och trippade igen nästa tick. 120 Hz i några sekunder ger
+301.
+
+### Fyra ändringar
+
+1. **Dragytan är det största mappade fönstret av den fokuserade klassen** på
+   den workspacen, med monitorns yta som fallback, aldrig ett palettfönster.
+   Verifierat live: `hypr_drag_area()` returnerar huvudfönstret även när en
+   palett har fokus.
+2. **Kantskyddet har tre grindar**: det måste vara armerat (markören har
+   lämnat marginalen sedan förra gången), 500 ms måste ha gått, och markören
+   måste ha rört sig. Efter en kantclutch flyttas startpositionen till punkten
+   den warpade till.
+3. **`edge_guard` är av som default i keep-läge** och står explicit `"off"` i
+   fusion-profilen. Markören är Elias att placera, alltså är kanten hans också.
+   Kan slås på per profil.
+4. **Räknarna är separata och loggas per gest** på debug-nivå:
+   `gesture cursor: N warp(s), N clutch(es), N edge clutch(es), area from window`.
+
+### Verifiering
+
+Replay av hårdvaruinspelningen genom fusion-profilen i 10 sekunder, mot en
+fejkad kompositor som rapporterar **palettfönstret** som fokuserat:
+
+```
+viewport found (the fix)      warps=0  clutches=0  edge_clutches=0
+only the palette exists       warps=0  clutches=0  edge_clutches=0
+```
+
+Och med kantskyddet påtvingat `on` i samma omöjliga läge (markören långt
+utanför en 300x25-yta, 10 sekunder hårt orbit):
+
+```
+edge_clutches = 1     (en per tick hade varit ~1200)
+```
+
+Enhetstester för loopfallet: markör 5 px från kanten i keep-läge i 5 sekunder
+ger **max en** kantclutch, markör helt utanför ytan likaså, och en markör som
+studsar in och ut ur marginalen så fort den kan ger max en per 500 ms.
+
+---
+
+## 6. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")

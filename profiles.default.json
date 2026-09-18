@@ -48,7 +48,8 @@
     ],
     "pointer_include": "",
     "edge_margin": 20,
-    "switch_hold_ms": 0
+    "switch_hold_ms": 0,
+    "edge_guard_cooldown_ms": 500
   },
   "profiles": [
     {
@@ -64,6 +65,7 @@
       "type": "mouse",
       "cursor": "keep",
       "clutch": "off",
+      "edge_guard": "off",
       "idle_release_ms": 350,
       "switch_hold_ms": 250,
       "dominance_ratio": 2.0,

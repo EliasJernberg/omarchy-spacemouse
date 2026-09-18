@@ -823,6 +823,8 @@ DEFAULT_SETTINGS = {
     # How close to the window edge a drag may get before the edge guard picks
     # the pointer up, in a profile that does its own clutching (clutch: off).
     "edge_margin": 20.0,
+    # The edge guard may not fire more often than this, whatever it sees.
+    "edge_guard_cooldown_ms": 500.0,
     # How long a competing gesture must stay dominant before it takes over.
     # Zero switches immediately; a profile that re-reads the world on every
     # button change wants some patience here.
@@ -937,6 +939,20 @@ class Profile(object):
             raise ValueError(
                 "profile '%s' has unknown clutch mode '%s'" % (self.name, self.clutch_mode)
             )
+        # The edge guard is the last warp standing in keep mode, and in keep
+        # mode the pointer belongs to the user. Off there unless asked for.
+        if "edge_guard" in spec:
+            value = spec["edge_guard"]
+            if isinstance(value, str):
+                if value not in ("on", "off"):
+                    raise ValueError(
+                        "profile '%s' has unknown edge_guard '%s'" % (self.name, value)
+                    )
+                self.edge_guard = value == "on"
+            else:
+                self.edge_guard = bool(value)
+        else:
+            self.edge_guard = self.cursor_mode != "keep"
         # Settings a profile may override for itself. Everything else comes
         # from the global block.
         self.overrides = {}
@@ -983,6 +999,7 @@ class Profile(object):
             "gestures": [g.name for g in self.gestures],
             "cursor": self.cursor_mode,
             "clutch": self.clutch_mode,
+            "edge_guard": "on" if self.edge_guard else "off",
         }
 
 
@@ -1240,6 +1257,7 @@ class GestureEngine(object):
                 self.cursor.begin(
                     mode=self.profile.cursor_mode,
                     clutch_mode=self.profile.clutch_mode,
+                    edge_guard=self.profile.edge_guard,
                 )
             except Exception as exc:  # noqa: BLE001
                 self.log("could not park the cursor: %s" % exc)
@@ -1624,6 +1642,83 @@ def hypr_focus_window(address):
     return answer is not None and answer.strip().startswith("ok")
 
 
+def hypr_drag_area():
+    """Where a drag actually has room, which is not always the focused window.
+
+    Applications put palettes and toolbars in windows of their own, and they
+    carry the same class as the main window. Fusion does exactly this: a
+    300x25 strip and a 300x450 panel live alongside a 2536x1390 viewport, and
+    whichever of them was clicked last is the "focused window". Measuring a
+    drag against a 300x25 strip means the pointer is outside it almost always,
+    which made the edge guard fire on every single tick.
+
+    So the area is the largest mapped window of the focused class on that
+    workspace, and the monitor if there is no sensible window at all. The
+    address returned is still the focused window's, because that is what has
+    to get the focus back afterwards.
+
+    Returns (address, x, y, width, height, source) or None.
+    """
+    focused = hypr_json("j/activewindow")
+    if not isinstance(focused, dict):
+        return None
+    address = str(focused.get("address") or "")
+    window_class = str(focused.get("class") or "")
+    workspace = (focused.get("workspace") or {}).get("id")
+
+    best = None
+    best_area = 0
+    for client in hypr_json("j/clients") or []:
+        if not isinstance(client, dict):
+            continue
+        if str(client.get("class") or "") != window_class:
+            continue
+        if not client.get("mapped", True) or client.get("hidden", False):
+            continue
+        if workspace is not None and (client.get("workspace") or {}).get("id") != workspace:
+            continue
+        at, size = client.get("at"), client.get("size")
+        if not (isinstance(at, list) and isinstance(size, list)):
+            continue
+        try:
+            x, y, width, height = int(at[0]), int(at[1]), int(size[0]), int(size[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        area = width * height
+        if area > best_area:
+            best_area = area
+            best = (x, y, width, height)
+    if best is not None:
+        return (address,) + best + ("window",)
+
+    monitor = hypr_focused_monitor()
+    if monitor is not None:
+        return (address,) + monitor + ("monitor",)
+    geometry = hypr_active_geometry()
+    if geometry is None:
+        return None
+    return geometry + ("focused",)
+
+
+def hypr_focused_monitor():
+    """(x, y, width, height) of the focused monitor, or None."""
+    for monitor in hypr_json("j/monitors") or []:
+        if not isinstance(monitor, dict) or not monitor.get("focused"):
+            continue
+        try:
+            return (
+                int(monitor["x"]),
+                int(monitor["y"]),
+                int(monitor["width"]),
+                int(monitor["height"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
 def hypr_active_geometry():
     """(address, x, y, width, height) for the focused window, or None."""
     data = hypr_json("j/activewindow")
@@ -1693,7 +1788,7 @@ class CursorController(object):
 
     def __init__(self, settings=None, log=None, hypr=None):
         self.settings = settings if settings is not None else {}
-        self.log = log or (lambda message: None)
+        self.log = log or (lambda message: None)   # debug level: per gesture tally
         # Injection point for the tests: anything with the four hypr_* calls.
         self.hypr = hypr or self
         self.saved = None
@@ -1707,9 +1802,19 @@ class CursorController(object):
         self.active = False
         self.mode = "center"
         self.clutch_mode = "auto"
+        self.edge_guard = False
         self.clutches = 0
         self.warps = 0
         self.edge_clutches = 0
+        # Per gesture, so a session can be read off the log rather than
+        # inferred from three running totals.
+        self.gesture_warps = 0
+        self.gesture_clutches = 0
+        self.gesture_edge_clutches = 0
+        self.area_source = ""
+        self._edge_armed = True
+        self._edge_at = 0.0
+        self._since_clutch = 0.0
         self.available = True
 
     # -- the Hyprland calls, in one place so a test can replace them --------
@@ -1722,6 +1827,12 @@ class CursorController(object):
 
     def geometry_of_focus(self):
         return hypr_active_geometry()
+
+    def drag_area(self):
+        return hypr_drag_area()
+
+    def now(self):
+        return time.monotonic()
 
     def focus(self, address):
         return hypr_focus_window(address)
@@ -1736,7 +1847,7 @@ class CursorController(object):
     def enabled(self):
         return bool(self.settings.get("cursor_warp", True))
 
-    def begin(self, mode="center", clutch_mode="auto"):
+    def begin(self, mode="center", clutch_mode="auto", edge_guard=None):
         """Start a drag session under one of the two cursor policies."""
         self.active = False
         self.saved = None
@@ -1747,14 +1858,26 @@ class CursorController(object):
         self.address = ""
         self.travel_x = 0.0
         self.travel_y = 0.0
+        self.gesture_warps = 0
+        self.gesture_clutches = 0
+        self.gesture_edge_clutches = 0
+        self._edge_armed = True
+        self._edge_at = 0.0
+        self._since_clutch = 0.0
         self.mode = str(mode or "center")
         self.clutch_mode = str(clutch_mode or "auto")
+        # The edge guard is the only warp left in keep mode, and in keep mode
+        # the pointer is the user's to place. Off unless asked for.
+        self.edge_guard = (
+            (self.mode != "keep") if edge_guard is None else bool(edge_guard)
+        )
         if not self.enabled:
             return False
-        geometry = self.hypr.geometry_of_focus()
+        geometry = self.hypr.drag_area()
         if geometry is None:
             return False
-        self.address, x, y, width, height = geometry
+        self.address, x, y, width, height = geometry[:5]
+        self.area_source = geometry[5] if len(geometry) > 5 else "window"
         self.geometry = (x, y, width, height)
         self.centre = (x + width // 2, y + height // 2)
         position = self.hypr.cursor_position()
@@ -1783,6 +1906,7 @@ class CursorController(object):
             return False
         if self.hypr.warp(*point):
             self.warps += 1
+            self.gesture_warps += 1
             self.at = tuple(point)
             return True
         return False
@@ -1809,16 +1933,44 @@ class CursorController(object):
         self.travel_y += dy
         if self.at is not None:
             self.at = (self.at[0] + dx, self.at[1] + dy)
+        self._since_clutch += abs(dx) + abs(dy)
         if self.clutch_mode == "off":
-            # No periodic clutching. The edge guard is all that is left, and
-            # it only fires when the drag would otherwise stop dead.
-            return self.near_edge()
+            return self.edge_guard_wants_a_clutch()
         fraction = float(self.settings.get("clutch_fraction", 0.35))
         _, _, width, height = self.geometry
         return (
             abs(self.travel_x) >= width * fraction
             or abs(self.travel_y) >= height * fraction
         )
+
+    def edge_guard_wants_a_clutch(self):
+        """Should the edge guard fire? Three gates, all of them earned.
+
+        Without them this loops. The pointer is warped back to a place that is
+        itself inside the margin (or the area was a palette window the pointer
+        was never inside), the very next tick sees it near the edge again, and
+        the guard fires every tick for as long as the drag lasts. That is
+        exactly what happened in Fusion: 301 clutches in one session.
+
+        So: the guard has to be switched on at all; the pointer has to have
+        left the margin since the last time it fired; half a second has to
+        have passed; and the pointer has to have actually moved.
+        """
+        if not self.edge_guard:
+            return False
+        if not self.near_edge():
+            # Out of the margin: the guard may fire again next time it is not.
+            self._edge_armed = True
+            return False
+        if not self._edge_armed:
+            return False
+        if self.hypr.now() - self._edge_at < float(
+            self.settings.get("edge_guard_cooldown_ms", 500.0)
+        ) / 1000.0:
+            return False
+        if self._since_clutch < 1.0:
+            return False
+        return True
 
     def clutch(self):
         """Pick the pointer up mid-drag. The caller lifts and presses the buttons.
@@ -1835,10 +1987,21 @@ class CursorController(object):
             return False
         self.travel_x = 0.0
         self.travel_y = 0.0
+        self._since_clutch = 0.0
         self.clutches += 1
+        self.gesture_clutches += 1
         if self.clutch_mode == "off":
             self.edge_clutches += 1
-        return self.warp_to(target)
+            self.gesture_edge_clutches += 1
+            # Disarm until the pointer has left the margin under its own
+            # steam, and remember where it landed: that is the new origin, so
+            # the next edge guard returns here rather than to a stale point.
+            self._edge_armed = False
+            self._edge_at = self.hypr.now()
+        warped = self.warp_to(target)
+        if warped and self.clutch_mode == "off":
+            self.origin = tuple(target)
+        return warped
 
     def end(self):
         """Put the pointer back, and the focus with it."""
@@ -1852,6 +2015,15 @@ class CursorController(object):
         self.origin = None
         self.at = None
         self.geometry = None
+        self.log(
+            "gesture cursor: %d warp(s), %d clutch(es), %d edge clutch(es), area from %s"
+            % (
+                self.gesture_warps,
+                self.gesture_clutches,
+                self.gesture_edge_clutches,
+                self.area_source or "?",
+            )
+        )
         if mode == "keep":
             # Nothing was moved, so there is nothing to put back.
             return False
@@ -2737,7 +2909,7 @@ class SpaceMouseDaemon(object):
         self._control_server = None
 
         # Pointer arbitration.
-        self.cursor = CursorController(self.profile_set.settings, log=self.log)
+        self.cursor = CursorController(self.profile_set.settings, log=self.debug)
         self.pointer = None
         self.watchdog = None
         self.pointer_mode = str(
