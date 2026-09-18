@@ -49,13 +49,15 @@ else
 fi
 
 printf '\n== Bar widget\n'
-if command -v omarchy-plugin-list >/dev/null &&
-  omarchy-plugin-list --json 2>/dev/null | grep -q "\"$PLUGIN_ID\""; then
-  omarchy plugin remove "$PLUGIN_ID" --yes 2>/dev/null ||
-    say "could not remove it, try: omarchy plugin remove $PLUGIN_ID"
+if ! command -v omarchy-plugin-list >/dev/null; then
+  say "omarchy plugin commands not found, nothing to remove"
+elif ! omarchy-plugin-list --json 2>/dev/null | grep -q "\"$PLUGIN_ID\""; then
+  say "plugin '$PLUGIN_ID' was not installed"
+elif omarchy plugin remove "$PLUGIN_ID" --yes >/dev/null 2>&1; then
   say "removed the '$PLUGIN_ID' plugin"
 else
-  say "plugin '$PLUGIN_ID' was not installed"
+  say "could NOT remove '$PLUGIN_ID'. Remove it by hand:"
+  say "  omarchy plugin remove $PLUGIN_ID --yes"
 fi
 
 printf '\n== Leftovers\n'
