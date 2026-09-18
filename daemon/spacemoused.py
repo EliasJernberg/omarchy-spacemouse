@@ -1543,6 +1543,7 @@ class SpaceMouseDaemon(object):
         self.uinput_state = "closed"
         self.uinput_detail = ""
         self.next_uinput_try = 0.0
+        self._uinput_complaint = ""
 
         self.enabled = True
         self.manual_profile = None  # name of a manual override
@@ -1588,7 +1589,12 @@ class SpaceMouseDaemon(object):
         return VirtualDevice(path=self.args.uinput)
 
     def ensure_uinput(self):
-        """Open the virtual device lazily, and keep retrying if it is denied."""
+        """Open the virtual device lazily, and keep retrying if it is denied.
+
+        The retry is silent after the first complaint. A missing udev rule is a
+        standing condition, not an event, and a line every ten seconds for the
+        length of a session would bury everything else in the journal.
+        """
         if self.device.is_open:
             return True
         now = time.monotonic()
@@ -1601,15 +1607,19 @@ class SpaceMouseDaemon(object):
             self.uinput_detail = str(exc)
             self.next_uinput_try = now + 10.0
             self.status_dirty = True
-            self.log(str(exc))
-            if exc.reason == "denied":
-                self.log(
-                    "add the udev rule and re-plug: "
-                    'KERNEL=="uinput", MODE="0660", GROUP="uucp"'
-                )
+            if self._uinput_complaint != self.uinput_detail:
+                self._uinput_complaint = self.uinput_detail
+                self.log(str(exc))
+                if exc.reason == "denied":
+                    self.log(
+                        "add the udev rule and log back in: "
+                        'KERNEL=="uinput", MODE="0660", GROUP="uucp". '
+                        "Retrying every 10 s, quietly."
+                    )
             return False
         self.uinput_state = "ready"
         self.uinput_detail = ""
+        self._uinput_complaint = ""
         self.status_dirty = True
         self.log("virtual device '%s' created" % DEVICE_NAME)
         return True
