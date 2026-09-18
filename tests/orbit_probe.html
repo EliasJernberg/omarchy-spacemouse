@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  Orbit probe for omarchy-spacemouse.
+
+  Open this in any browser, focus it, and move the puck. It shows what the
+  browser actually received: which buttons went down, whether shift was held,
+  how far the pointer moved and how much wheel arrived, plus a cube that
+  orbits, pans and zooms the way a Three.js viewer would. That makes it a
+  direct answer to "is the daemon emitting the right thing, in the right
+  direction", without pulling a 3D library over the network.
+
+  Conventions it implements, matching the browser-threejs profile:
+    left drag           orbit
+    right drag          pan
+    shift + middle drag pan
+    wheel               zoom
+-->
+<html><head><meta charset="utf-8"><title>SpaceMouse orbit probe</title>
+<style>
+ html,body{margin:0;height:100%;background:#0e1216;color:#8ef0c0;font:16px/1.5 monospace;overflow:hidden}
+ #stage{position:absolute;inset:0;display:grid;place-items:center;perspective:900px}
+ #cube{width:220px;height:220px;position:relative;transform-style:preserve-3d;transition:none}
+ .f{position:absolute;width:220px;height:220px;border:2px solid #0b0e12;display:grid;place-items:center;font-size:48px;color:#06202a;font-weight:bold}
+ .front{background:#e05555;transform:translateZ(110px)}
+ .back{background:#55e055;transform:rotateY(180deg) translateZ(110px)}
+ .right{background:#5570e0;transform:rotateY(90deg) translateZ(110px)}
+ .left{background:#e0e055;transform:rotateY(-90deg) translateZ(110px)}
+ .top{background:#e055e0;transform:rotateX(90deg) translateZ(110px)}
+ .bottom{background:#55e0e0;transform:rotateX(-90deg) translateZ(110px)}
+ #hud{position:absolute;top:0;left:0;padding:12px 16px;background:#0a0d11cc;white-space:pre;font-size:15px}
+ #log{position:absolute;bottom:0;left:0;right:0;max-height:34%;overflow:hidden;padding:8px 16px;background:#0a0d11cc;font-size:13px;white-space:pre}
+</style></head><body>
+<div id="stage"><div id="cube">
+ <div class="f front">F</div><div class="f back">B</div><div class="f right">R</div>
+ <div class="f left">L</div><div class="f top">T</div><div class="f bottom">D</div>
+</div></div>
+<div id="hud"></div><div id="log"></div>
+<script>
+var yaw = 0, pitch = 0, zoom = 1, panX = 0, panY = 0;
+var buttons = 0, mods = "", downs = [], moves = 0, dxSum = 0, dySum = 0, wheelSum = 0, events = [];
+function push(line){ events.push(line); if (events.length > 12) events.shift();
+  document.getElementById("log").textContent = events.join("\n"); }
+function hud(){
+  document.getElementById("hud").textContent =
+    "yaw   " + yaw.toFixed(1) + "\npitch " + pitch.toFixed(1) + "\nzoom  " + zoom.toFixed(3) +
+    "\npan   " + panX.toFixed(0) + " , " + panY.toFixed(0) +
+    "\nbuttons " + buttons + "  mods " + (mods || "-") +
+    "\nmoves " + moves + "  dx " + dxSum.toFixed(0) + "  dy " + dySum.toFixed(0) +
+    "  wheel " + wheelSum.toFixed(0) + "\ndowns " + (downs.join(",") || "-");
+  document.getElementById("cube").style.transform =
+    "scale(" + zoom + ") translate(" + panX + "px," + panY + "px) rotateX(" + pitch + "deg) rotateY(" + yaw + "deg)";
+  document.title = "yaw " + yaw.toFixed(1) + " pitch " + pitch.toFixed(1) + " zoom " + zoom.toFixed(2);
+}
+addEventListener("mousedown", function(e){ buttons = e.buttons; downs.push(e.button);
+  mods = (e.shiftKey?"S":"") + (e.ctrlKey?"C":"") + (e.altKey?"A":"");
+  push("down button=" + e.button + " buttons=" + e.buttons + " shift=" + e.shiftKey); hud(); });
+addEventListener("mouseup", function(e){ buttons = e.buttons;
+  push("up   button=" + e.button + " buttons=" + e.buttons); hud(); });
+addEventListener("mousemove", function(e){
+  if (!e.buttons) return;
+  moves++; dxSum += e.movementX; dySum += e.movementY;
+  mods = (e.shiftKey?"S":"") + (e.ctrlKey?"C":"") + (e.altKey?"A":"");
+  if (e.buttons & 4 && e.shiftKey) { panX += e.movementX; panY += e.movementY; }
+  else if (e.buttons & 2) { panX += e.movementX; panY += e.movementY; }
+  else { yaw += e.movementX * 0.4; pitch -= e.movementY * 0.4; }
+  if (moves % 20 === 1) push("move buttons=" + e.buttons + " d=" + e.movementX + "," + e.movementY);
+  hud(); });
+addEventListener("wheel", function(e){ wheelSum += e.deltaY;
+  zoom *= (e.deltaY < 0 ? 1.03 : 0.97); zoom = Math.max(0.2, Math.min(4, zoom));
+  push("wheel deltaY=" + e.deltaY.toFixed(1) + " mode=" + e.deltaMode); hud(); }, {passive:true});
+addEventListener("contextmenu", function(e){ e.preventDefault(); });
+hud();
+</script></body></html>

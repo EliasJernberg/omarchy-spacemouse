@@ -420,6 +420,28 @@ It is not part of `tests/run.py`, because it is the only thing here that
 touches the kernel. Without the second udev rule above it still creates the
 device and emits, and reports the readback as skipped rather than failed.
 
+### Checking the directions in a browser
+
+`tests/orbit_probe.html` is a single page with no dependencies that shows what
+the browser actually received: which buttons went down, whether shift was held,
+how far the pointer moved, how much wheel arrived, and a cube that orbits, pans
+and zooms the way a Three.js viewer would. Open it, focus it, move the puck.
+
+```bash
+xdg-open tests/orbit_probe.html
+```
+
+To drive it without touching the puck, play the recording into whatever window
+has focus:
+
+```bash
+python3 daemon/spacemoused.py --no-focus --profile browser-threejs \
+  --replay tests/fixtures/hardware/calibration_capture.bin --replay-speed 4
+```
+
+If something moves the wrong way, flip the `gain` sign for that axis in the
+profile (see Tuning).
+
 To watch the device by hand instead:
 
 ```bash
