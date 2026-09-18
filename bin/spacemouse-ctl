@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""spacemouse-ctl: talk to the omarchy-spacemouse daemon.
+
+    spacemouse-ctl status [--json]     what the daemon is doing right now
+    spacemouse-ctl enable              emit input again
+    spacemouse-ctl disable             stop emitting (puck goes quiet)
+    spacemouse-ctl toggle              flip enabled
+    spacemouse-ctl profile <name>      pin a profile, ignoring window focus
+    spacemouse-ctl auto                back to following the focused window
+    spacemouse-ctl reload              re-read profiles.json
+    spacemouse-ctl profiles [--json]   list the profiles that are loaded
+
+Standard library only, so it runs anywhere python3 does.
+"""
+
+import json
+import os
+import socket
+import sys
+
+APP_NAME = "omarchy-spacemouse"
+COMMANDS = ("status", "enable", "disable", "toggle", "profile", "auto", "reload", "profiles")
+
+
+def runtime_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+    return os.path.join(base, APP_NAME)
+
+
+def control_path():
+    return os.path.join(runtime_dir(), "control.sock")
+
+
+def status_path():
+    return os.path.join(runtime_dir(), "status.json")
+
+
+def ask(command, arg=""):
+    """One request, one reply. Returns the parsed response or None."""
+    path = control_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(3.0)
+        sock.connect(path)
+        sock.sendall((json.dumps({"cmd": command, "arg": arg}) + "\n").encode("utf-8"))
+        data = b""
+        while b"\n" not in data:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        sock.close()
+    except OSError:
+        return None
+    line = data.split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except ValueError:
+        return None
+
+
+def read_status_file():
+    try:
+        with open(status_path(), "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def format_status(status):
+    lines = []
+    state = "enabled" if status.get("enabled") else "disabled"
+    mode = status.get("mode", "auto")
+    lines.append("state      %s (%s)" % (state, mode))
+    lines.append("profile    %s [%s]" % (status.get("profile", "?"), status.get("profile_type", "?")))
+    if status.get("profile_description"):
+        lines.append("           %s" % status["profile_description"])
+    window = status.get("window_class") or "(none)"
+    title = status.get("window_title") or ""
+    if title:
+        window += "  -  " + (title[:60] + ("..." if len(title) > 60 else ""))
+    lines.append("window     %s" % window)
+    lines.append("gesture    %s" % (status.get("gesture") or "(idle)"))
+    lines.append("spacenavd  %s" % status.get("spnav", "?"))
+    lines.append("hyprland   %s" % status.get("hyprland", "?"))
+    uinput = status.get("uinput", "?")
+    if status.get("uinput_detail"):
+        uinput += "  (%s)" % status["uinput_detail"]
+    lines.append("uinput     %s" % uinput)
+    if status.get("config_error"):
+        lines.append("config     ERROR: %s" % status["config_error"])
+    else:
+        lines.append("config     %s" % status.get("config", "?"))
+    return "\n".join(lines)
+
+
+def format_profiles(status):
+    lines = []
+    active = status.get("profile")
+    for profile in status.get("profiles", []):
+        mark = "*" if profile.get("name") == active else " "
+        lines.append("%s %-18s %-7s %s" % (
+            mark,
+            profile.get("name", "?"),
+            profile.get("type", "?"),
+            profile.get("match") or "(fallback)",
+        ))
+    return "\n".join(lines) if lines else "(no profiles loaded)"
+
+
+def usage(stream=sys.stdout, code=0):
+    stream.write(__doc__.strip() + "\n")
+    return code
+
+
+def main(argv):
+    args = list(argv[1:])
+    as_json = False
+    for flag in ("--json", "-j"):
+        if flag in args:
+            args.remove(flag)
+            as_json = True
+    if not args or args[0] in ("-h", "--help", "help"):
+        return usage()
+    command = args[0]
+    arg = args[1] if len(args) > 1 else ""
+    if command not in COMMANDS:
+        sys.stderr.write("spacemouse-ctl: unknown command '%s'\n" % command)
+        return usage(sys.stderr, 2)
+    if command == "profile" and not arg:
+        sys.stderr.write("spacemouse-ctl: profile needs a name\n")
+        return 2
+
+    wire_command = "status" if command == "profiles" else command
+    response = ask(wire_command, arg)
+
+    if response is None:
+        # No socket: the daemon is down, or this is a different session. A
+        # stale status file still answers "what was it doing", which is more
+        # useful than nothing, but only for the read-only commands.
+        status = read_status_file()
+        if command in ("status", "profiles") and status is not None:
+            sys.stderr.write("spacemouse-ctl: daemon not answering, showing the last status file\n")
+            if as_json:
+                print(json.dumps(status, indent=2))
+            else:
+                print(format_status(status) if command == "status" else format_profiles(status))
+            return 1
+        sys.stderr.write("spacemouse-ctl: daemon is not running "
+                         "(systemctl --user start omarchy-spacemouse)\n")
+        return 1
+
+    if not response.get("ok"):
+        sys.stderr.write("spacemouse-ctl: %s\n" % response.get("error", "request failed"))
+        return 1
+
+    status = response.get("status") or {}
+    if as_json:
+        print(json.dumps(status, indent=2))
+        return 0
+    if command == "profiles":
+        print(format_profiles(status))
+        return 0
+    print(format_status(status))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

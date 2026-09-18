@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "settings": {
+    "tick_hz": 60,
+    "deadzone": 30,
+    "full_scale": 350,
+    "curve": 1.5,
+    "sensitivity": 1.0,
+    "axis_gain": { "x": 1.0, "y": 1.0, "z": 1.0, "rx": 1.0, "ry": 1.0, "rz": 1.0 },
+    "axis_invert": { "x": false, "y": false, "z": false, "rx": false, "ry": false, "rz": false },
+    "activate_threshold": 0.12,
+    "release_threshold": 0.05,
+    "idle_release_ms": 150,
+    "dominance_ratio": 1.35,
+    "pointer_speed": 900,
+    "wheel_speed": 3.0,
+    "wheel_hi_res": true,
+    "spnav_socket": "/run/spnav.sock"
+  },
+  "profiles": [
+    {
+      "name": "cad-native",
+      "description": "Applications that speak to spacenavd themselves. The daemon stays quiet.",
+      "match": "^(kicad|pcbnew|eeschema|gerbview|pcb_calculator|bitmap2component|org\\.kicad\\.|FreeCAD|freecad|Blender|blender)",
+      "type": "native"
+    },
+    {
+      "name": "fusion-bifrost",
+      "description": "Fusion 360 under Wine is driven by the Bifrost bridge, not by this daemon.",
+      "match": "^fusion360\\.exe$",
+      "type": "native"
+    },
+    {
+      "name": "desktop-off",
+      "description": "Terminals, chat and media players. Emitting a middle-button drag here would paste the primary selection, so the puck is simply idle.",
+      "match": "^(foot|footclient|Alacritty|kitty|com\\.mitchellh\\.ghostty|org\\.wezfurlong\\.wezterm|org\\.gnome\\.(Console|Nautilus)|Slack|discord|vesktop|Spotify|thunderbird|obsidian)$",
+      "type": "off"
+    },
+    {
+      "name": "browser-threejs",
+      "description": "Browsers, tuned for the Three.js OrbitControls convention: left drag orbits, right drag pans, the wheel dollies.",
+      "match": "^(Opera|opera|Chromium|chromium|google-chrome|Google-chrome|brave|Brave-browser|firefox|Firefox|LibreWolf|zen|Vivaldi)",
+      "type": "mouse",
+      "gestures": {
+        "orbit": {
+          "enabled": true,
+          "hold": ["left"],
+          "speed": 1.0,
+          "axes": {
+            "rx": { "to": "dy", "gain": 1.0 },
+            "ry": { "to": "dx", "gain": -1.0 }
+          }
+        },
+        "pan": {
+          "enabled": true,
+          "hold": ["right"],
+          "speed": 1.0,
+          "axes": {
+            "x": { "to": "dx", "gain": 1.0 },
+            "z": { "to": "dy", "gain": -1.0 }
+          }
+        },
+        "zoom": {
+          "enabled": true,
+          "mode": "wheel",
+          "speed": 1.0,
+          "axes": {
+            "y": { "to": "wheel", "gain": 1.0 }
+          }
+        },
+        "twist": {
+          "enabled": false,
+          "hold": ["ctrl", "left"],
+          "speed": 1.0,
+          "axes": {
+            "rz": { "to": "dx", "gain": 1.0 }
+          }
+        }
+      },
+      "buttons": {
+        "5": { "action": "fit", "label": "Fit view" }
+      }
+    },
+    {
+      "name": "default",
+      "description": "Everything else, with the CAD mouse convention: middle drag orbits, shift plus middle pans, the wheel zooms.",
+      "match": null,
+      "type": "mouse",
+      "fit_key": "KEY_HOME",
+      "gestures": {
+        "orbit": {
+          "enabled": true,
+          "hold": ["middle"],
+          "speed": 1.0,
+          "axes": {
+            "rx": { "to": "dy", "gain": 1.0 },
+            "ry": { "to": "dx", "gain": -1.0 }
+          }
+        },
+        "pan": {
+          "enabled": true,
+          "hold": ["shift", "middle"],
+          "speed": 1.0,
+          "axes": {
+            "x": { "to": "dx", "gain": 1.0 },
+            "z": { "to": "dy", "gain": -1.0 }
+          }
+        },
+        "zoom": {
+          "enabled": true,
+          "mode": "wheel",
+          "speed": 1.0,
+          "axes": {
+            "y": { "to": "wheel", "gain": 1.0 }
+          }
+        },
+        "twist": {
+          "enabled": false,
+          "hold": ["ctrl", "middle"],
+          "speed": 1.0,
+          "axes": {
+            "rz": { "to": "dx", "gain": 1.0 }
+          }
+        }
+      },
+      "buttons": {
+        "5": { "action": "fit", "label": "Fit view" }
+      }
+    }
+  ]
+}
