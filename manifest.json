@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "jernberg.spacemouse",
+  "name": "SpaceMouse",
+  "version": "1.0.0",
+  "author": "Elias Jernberg",
+  "license": "MIT",
+  "description": "Per-application 3Dconnexion SpaceMouse profiles: the active profile in the bar, one click to silence the puck, and a panel to pin a profile by hand.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "shell/Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "SpaceMouse",
+    "description": "Which SpaceMouse profile the focused window is getting, whether the daemon is emitting, and a profile override.",
+    "category": "Input",
+    "aliases": ["spacemouse", "3dconnexion", "spacenav"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
