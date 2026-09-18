@@ -262,7 +262,7 @@ class ControlSocketTest(unittest.TestCase):
 
     def test_profiles_lists_the_shipped_set(self):
         listing = self.ctl("profiles")
-        for name in ("cad-native", "fusion-bifrost", "browser-threejs", "default"):
+        for name in ("cad-native", "fusion", "browser-threejs", "default"):
             self.assertIn(name, listing)
 
     def test_reload_keeps_the_daemon_alive(self):

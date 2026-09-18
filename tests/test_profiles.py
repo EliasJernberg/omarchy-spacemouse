@@ -48,10 +48,25 @@ class ShippedDefaultsTest(unittest.TestCase):
                 "%s should be left to spacenavd, got %s" % (window_class, profile.name),
             )
 
-    def test_fusion_is_left_to_bifrost(self):
+    def test_fusion_gets_fusions_own_mouse_conventions(self):
+        # Fusion under Wine: middle drag pans, shift plus middle orbits.
+        # Backwards from the CAD default, which is why it has its own profile.
         profile = self.select("fusion360.exe")
-        self.assertEqual(profile.name, "fusion-bifrost")
-        self.assertEqual(profile.type, "native")
+        self.assertEqual(profile.name, "fusion")
+        self.assertEqual(profile.type, "mouse")
+        gestures = dict((g.name, g) for g in profile.gestures)
+        self.assertEqual(gestures["pan"].hold, [sm.BTN_MIDDLE])
+        self.assertEqual(
+            gestures["orbit"].hold, [sm.KEY_NAMES["KEY_LEFTSHIFT"], sm.BTN_MIDDLE]
+        )
+        self.assertEqual(gestures["zoom"].mode, "wheel")
+
+    def test_fusion_has_no_fit_key_bound(self):
+        # There is no shortcut under Wine that can be relied on, so the FIT
+        # button is deliberately inert rather than wrong.
+        profile = self.select("fusion360.exe")
+        self.assertEqual(profile.fit_key, [])
+        self.assertIn(5, profile.buttons)
 
     def test_browsers_use_the_threejs_convention(self):
         for window_class in (

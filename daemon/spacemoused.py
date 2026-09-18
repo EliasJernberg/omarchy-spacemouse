@@ -176,6 +176,30 @@ UI_DEV_SETUP = _iow(3, UINPUT_SETUP_SIZE)  # 0x405c5503
 UI_SET_EVBIT = _iow(100, 4)  # 0x40045564
 UI_SET_KEYBIT = _iow(101, 4)  # 0x40045565
 UI_SET_RELBIT = _iow(102, 4)  # 0x40045566
+UI_SET_MSCBIT = _iow(104, 4)  # 0x40045568
+
+
+def _ior(nr, size):
+    return (_IOC_READ << 30) | (size << 16) | (UINPUT_IOCTL_BASE << 8) | nr
+
+
+_IOC_READ = 2
+UI_SYSNAME_SIZE = 64
+# Asks the kernel which /sys/devices/virtual/input/inputN it just made for us.
+# That is the only reliable way to recognise our own device later: the name is
+# not unique (a second instance would carry the same one) and the event node
+# number is whatever was free.
+UI_GET_SYSNAME = (
+    (_IOC_READ << 30) | (UI_SYSNAME_SIZE << 16) | (UINPUT_IOCTL_BASE << 8) | 44
+)
+
+# evdev, for the physical pointers the proxy takes over.
+EV_MSC = 0x04
+MSC_SCAN = 0x04
+# EVIOCGRAB(int): while a grab is held the kernel delivers that device's events
+# to this fd only. Closing the fd always releases it, which is the safety net
+# under everything else here.
+EVIOCGRAB = (_IOC_WRITE << 30) | (4 << 16) | (ord("E") << 8) | 0x90  # 0x40044590
 
 UINPUT_MAX_NAME_SIZE = 80
 ABS_CNT = 64
@@ -328,6 +352,45 @@ MODIFIER_ALIASES = {
 
 MOUSE_BUTTON_CODES = frozenset(BUTTON_NAMES.values())
 
+# Every key code the virtual device declares. 1..255 covers the keyboard block
+# (which udev needs in order to tag the device as a keyboard at all) and the
+# media and consumer keys above it, so a physical mouse being proxied through
+# this device does not lose its extra buttons. It deliberately stops before
+# 0x100, where the BTN_* blocks begin: declaring BTN_JOYSTICK or BTN_GAMEPAD
+# would have udev tag this as a joystick, and libinput treats those very
+# differently. The mouse buttons are added separately, by name.
+KEY_CODES = tuple(range(1, 256))
+
+# The relative axes the virtual device declares, and therefore the only ones a
+# proxied physical mouse can carry. Kept to exactly what a mouse uses: adding
+# REL_RX/RY/RZ would make this look like a 3D mouse to userspace, which is the
+# one thing it must not be mistaken for.
+REL_CODES = frozenset(
+    (REL_X, REL_Y, REL_WHEEL, REL_HWHEEL, REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES)
+)
+
+# udev properties that disqualify a device, whatever else it claims to be.
+POINTER_REJECT_PROPERTIES = (
+    "ID_INPUT_3D_MOUSE",
+    "ID_INPUT_TOUCHPAD",
+    "ID_INPUT_TABLET",
+    "ID_INPUT_TABLET_PAD",
+    "ID_INPUT_JOYSTICK",
+    "ID_INPUT_ACCELEROMETER",
+)
+
+DEFAULT_POINTER_EXCLUDE_NAMES = (
+    "DualSense",
+    "Ducky Keyboard Mouse",
+    "SpaceMouse",
+    "SpaceNavigator",
+)
+
+# vendor:product pairs never to grab: the puck itself (spacenavd owns it) and
+# anything wearing our own virtual device's ids.
+DEFAULT_POINTER_EXCLUDE_IDS = ("046d:c62b", "5350:4d53")
+
+
 
 def resolve_token(token):
     """Turn one token ("middle", "shift", "KEY_HOME", "home", "f5") into a code."""
@@ -420,8 +483,28 @@ class EventSink(object):
     def queue(self, etype, code, value):
         self._pending.append((etype, code, value))
 
-    def syn(self):
+    def _emit_batch(self, events):
+        """Deliver one complete batch. Implemented by the concrete sinks."""
         raise NotImplementedError
+
+    def syn(self):
+        """Flush whatever this side has queued, as one batch."""
+        if not self._pending:
+            return
+        batch, self._pending = self._pending, []
+        self._emit_batch(batch)
+
+    def forward(self, events):
+        """Send one batch of already-decoded events straight through.
+
+        This is the pointer proxy's path: the events belong to a physical
+        mouse and are passed on unchanged, so none of the held-key bookkeeping
+        applies to them. It deliberately does not go through the queue, which
+        belongs to the gesture engine's thread alone; a batch from either side
+        reaches the device whole.
+        """
+        if events:
+            self._emit_batch(list(events))
 
     def move(self, dx, dy):
         if dx:
@@ -483,13 +566,30 @@ class VirtualDevice(EventSink):
     real 3Dconnexion puck looks like to the kernel.
     """
 
-    def __init__(self, name=DEVICE_NAME, path="/dev/uinput", io=None, settle=0.25):
+    def __init__(
+        self,
+        name=DEVICE_NAME,
+        path="/dev/uinput",
+        io=None,
+        settle=0.25,
+        vendor=0x5350,
+        product=0x4D53,
+    ):
         EventSink.__init__(self)
         self.name = name
         self.path = path
         self.io = io or UinputIO()
         self.fd = None
         self.legacy_setup = False
+        self.vendor = vendor
+        self.product = product
+        # The inputN the kernel made for us, e.g. "input62". Used to recognise
+        # our own device when the pointer proxy enumerates what to grab.
+        self.sysname = ""
+        # Serialises whole batches. The proxy thread writes physical mouse
+        # events through the same fd as the gesture engine, and a batch must
+        # never be cut in half by the other writer.
+        self._write_lock = threading.RLock()
         # How long to wait for udev to publish the new device before writing
         # to it. Zero in the tests, where nothing downstream is listening.
         self.settle = settle
@@ -507,7 +607,9 @@ class VirtualDevice(EventSink):
             fd = self.io.open(self.path)
         except OSError as exc:
             reason = "denied" if exc.errno in (errno.EACCES, errno.EPERM) else "error"
-            raise UinputUnavailable("cannot open %s: %s" % (self.path, exc), reason) from exc
+            raise UinputUnavailable(
+                "cannot open %s: %s" % (self.path, exc), reason
+            ) from exc
         try:
             self._configure(fd)
         except OSError as exc:
@@ -515,7 +617,9 @@ class VirtualDevice(EventSink):
                 self.io.close(fd)
             except OSError:
                 pass
-            raise UinputUnavailable("cannot set up %s: %s" % (self.path, exc), "error") from exc
+            raise UinputUnavailable(
+                "cannot set up %s: %s" % (self.path, exc), "error"
+            ) from exc
         self.fd = fd
         self.pressed = []
         self._pending = []
@@ -529,26 +633,21 @@ class VirtualDevice(EventSink):
         self.io.ioctl(fd, UI_SET_EVBIT, EV_KEY)
         self.io.ioctl(fd, UI_SET_EVBIT, EV_REL)
         self.io.ioctl(fd, UI_SET_EVBIT, EV_SYN)
-        for code in sorted(set(KEY_NAMES.values())):
+        self.io.ioctl(fd, UI_SET_EVBIT, EV_MSC)
+        for code in KEY_CODES:
             self.io.ioctl(fd, UI_SET_KEYBIT, code)
         for code in sorted(MOUSE_BUTTON_CODES):
             self.io.ioctl(fd, UI_SET_KEYBIT, code)
-        for code in (
-            REL_X,
-            REL_Y,
-            REL_WHEEL,
-            REL_HWHEEL,
-            REL_WHEEL_HI_RES,
-            REL_HWHEEL_HI_RES,
-        ):
+        for code in sorted(REL_CODES):
             self.io.ioctl(fd, UI_SET_RELBIT, code)
+        self.io.ioctl(fd, UI_SET_MSCBIT, MSC_SCAN)
 
         name = self.name.encode("utf-8")[: UINPUT_MAX_NAME_SIZE - 1]
         setup = struct.pack(
             "@HHHH80sI",
             BUS_VIRTUAL,
-            0x5350,
-            0x4D53,
+            self.vendor,
+            self.product,
             0x0001,
             name,
             0,
@@ -563,14 +662,24 @@ class VirtualDevice(EventSink):
                 "@80sHHHHI",
                 name,
                 BUS_VIRTUAL,
-                0x5350,
-                0x4D53,
+                self.vendor,
+                self.product,
                 0x0001,
                 0,
             )
             user_dev += b"\x00" * (UINPUT_USER_DEV_SIZE - len(user_dev))
             self.io.write(fd, user_dev)
         self.io.ioctl(fd, UI_DEV_CREATE)
+        self.sysname = self._read_sysname(fd)
+
+    def _read_sysname(self, fd):
+        """Ask the kernel for the inputN it gave us, or "" on an old kernel."""
+        try:
+            buffer = bytearray(UI_SYSNAME_SIZE)
+            self.io.ioctl(fd, UI_GET_SYSNAME, buffer)
+        except (OSError, TypeError, ValueError):
+            return ""
+        return bytes(buffer).split(b"\x00", 1)[0].decode("utf-8", "replace")
 
     def close(self):
         if self.fd is None:
@@ -594,19 +703,22 @@ class VirtualDevice(EventSink):
     def queue(self, etype, code, value):
         self._pending.append((etype, code, value))
 
-    def syn(self):
-        """Flush every queued event plus one SYN_REPORT in a single write."""
-        if not self._pending:
-            return
-        if self.fd is None:
-            self._pending = []
+    def _emit_batch(self, events):
+        """One write: every event in the batch plus a closing SYN_REPORT.
+
+        The lock matters because the pointer proxy delivers a physical mouse's
+        batches through this same fd from its own thread.
+        """
+        if self.fd is None or not events:
             return
         blob = b""
-        for etype, code, value in self._pending:
+        for etype, code, value in events:
             blob += struct.pack(INPUT_EVENT_FMT, 0, 0, etype, code, int(value))
         blob += struct.pack(INPUT_EVENT_FMT, 0, 0, EV_SYN, SYN_REPORT, 0)
-        self._pending = []
-        self.io.write(self.fd, blob)
+        with self._write_lock:
+            if self.fd is None:
+                return
+            self.io.write(self.fd, blob)
 
 
 class TraceDevice(EventSink):
@@ -641,13 +753,10 @@ class TraceDevice(EventSink):
             self.stream.write(line + "\n")
             self.stream.flush()
 
-    def syn(self):
-        if not self._pending:
+    def _emit_batch(self, events):
+        if not events:
             return
-        parts = []
-        for etype, code, value in self._pending:
-            parts.append("%d:%d:%d" % (etype, code, value))
-        self._pending = []
+        parts = ["%d:%d:%d" % (etype, code, value) for etype, code, value in events]
         self._write("syn " + " ".join(parts))
 
 
@@ -656,10 +765,17 @@ class TraceDevice(EventSink):
 # ---------------------------------------------------------------------------
 
 DEFAULT_SETTINGS = {
-    "tick_hz": 60.0,
-    "deadzone": 30.0,
+    # 120 Hz: the emit rate is what the hand feels as smoothness, and a
+    # virtual device costs nothing to run faster than the puck reports.
+    "tick_hz": 120.0,
+    "deadzone": 18.0,
+    # Hysteresis, in raw puck counts. A drag starts only once an axis passes
+    # engage_deadzone, and then keeps running down to deadzone. The gap is
+    # what keeps the resting noise (up to 20 counts on a SpaceMouse Pro) from
+    # starting a gesture while still letting a deliberate nudge do it.
+    "engage_deadzone": 24.0,
     "full_scale": 350.0,
-    "curve": 1.5,
+    "curve": 1.3,
     "sensitivity": 1.0,
     "axis_gain": {"x": 1.0, "y": 1.0, "z": 1.0, "rx": 1.0, "ry": 1.0, "rz": 1.0},
     "axis_invert": {
@@ -670,14 +786,36 @@ DEFAULT_SETTINGS = {
         "ry": False,
         "rz": False,
     },
-    "activate_threshold": 0.12,
-    "release_threshold": 0.05,
-    "idle_release_ms": 150.0,
+    # No threshold beyond the deadzone: the deadzone already decides when the
+    # puck is being held, and a second gate on top of it is what made small
+    # movements feel like they had to be forced.
+    "activate_threshold": 0.0,
+    "release_threshold": 0.0,
+    "idle_release_ms": 80.0,
     "dominance_ratio": 1.35,
+    "smoothing_ms": 30.0,
     "pointer_speed": 900.0,
     "wheel_speed": 3.0,
     "wheel_hi_res": True,
     "spnav_socket": DEFAULT_SPNAV_SOCKET,
+    # Cursor handling: park the pointer in the middle of the window for the
+    # length of a drag, and clutch when it has travelled this fraction of the
+    # window.
+    "cursor_warp": True,
+    "clutch_fraction": 0.35,
+    "flat_acceleration": True,
+    # Pointer arbitration: "proxied" takes the physical mice over so they
+    # cannot fight the puck mid-drag, "shared" leaves them alone.
+    "pointer_mode": "proxied",
+    # When the grab is actually held. "gesture" takes the mice only for the
+    # length of a puck drag, which is the smallest window that solves the
+    # problem: outside it the mouse is completely untouched, keeping its own
+    # acceleration profile and its own device identity. "always" holds the
+    # grab the whole time and passes every event through instead.
+    "pointer_grab": "gesture",
+    "pointer_exclude_names": list(DEFAULT_POINTER_EXCLUDE_NAMES),
+    "pointer_exclude_ids": list(DEFAULT_POINTER_EXCLUDE_IDS),
+    "pointer_include": "",
 }
 
 
@@ -710,6 +848,15 @@ class Gesture(object):
             value = norm.get(axis, 0.0)
             total += value * value
         return math.sqrt(total)
+
+    def raw_deflection(self, raw):
+        """The largest raw count on this group's axes, in puck units.
+
+        Engagement is decided on raw counts rather than on the normalized
+        value because that is the number a person can see in --dump and
+        compare against the resting noise of their own puck.
+        """
+        return max((abs(raw.get(axis, 0)) for axis in self.axes), default=0)
 
 
 class KeyBinding(object):
@@ -760,6 +907,10 @@ class Profile(object):
             gesture = Gesture(name, gspec or {})
             if gesture.enabled:
                 self.gestures.append(gesture)
+        # Drags hold a button and are exclusive; wheels hold nothing and run
+        # alongside them.
+        self.drag_gestures = [g for g in self.gestures if g.mode != "wheel"]
+        self.wheel_gestures = [g for g in self.gestures if g.mode == "wheel"]
         self.bindings = [KeyBinding(item) for item in (spec.get("bindings") or [])]
         self.buttons = {}
         for number, bspec in (spec.get("buttons") or {}).items():
@@ -905,14 +1056,16 @@ def normalize_axes(raw, settings):
     """Raw spacenavd counts to a signed 0..1 per axis.
 
     Below the deadzone an axis reads exactly zero, which is what keeps the
-    resting noise (up to 20 counts on this puck) and the cross-talk onto
-    neighbouring axes (up to 50) from starting a gesture on their own. The
-    response curve is applied after the deadzone, so a small deflection stays
-    small and the useful range is not spent on the first millimetre.
+    resting noise and the cross-talk onto neighbouring axes from starting a
+    gesture on their own. The deadzone alone does not have to swallow all of
+    it: what is left over is a magnitude far below activate_threshold, which
+    is the second gate. The response curve is applied after the deadzone, so a
+    small deflection stays small and the useful range is not spent on the
+    first millimetre.
     """
-    deadzone = float(settings.get("deadzone", 30.0))
+    deadzone = float(settings.get("deadzone", 18.0))
     full_scale = float(settings.get("full_scale", 350.0))
-    curve = float(settings.get("curve", 1.5))
+    curve = float(settings.get("curve", 1.3))
     sensitivity = float(settings.get("sensitivity", 1.0))
     gains = settings.get("axis_gain") or {}
     inverts = settings.get("axis_invert") or {}
@@ -951,22 +1104,27 @@ class GestureEngine(object):
     mid-drag does not chop the gesture in two.
     """
 
-    def __init__(self, device, settings=None, log=None, clock=time.monotonic):
+    def __init__(
+        self, device, settings=None, log=None, clock=time.monotonic, cursor=None
+    ):
         self.device = device
         self.settings = settings or dict(DEFAULT_SETTINGS)
         self.log = log or (lambda message: None)
         self.clock = clock
+        self.cursor = cursor
         self.profile = OFF_PROFILE
-        self.active = None  # active Gesture
+        self.active = None  # active drag Gesture
         self.active_since = 0.0
         self.last_above = 0.0
         self._frac_x = 0.0
         self._frac_y = 0.0
         self._hires = {"wheel": 0.0, "hwheel": 0.0}
         self._detent = {"wheel": 0.0, "hwheel": 0.0}
+        self._smoothed = dict((axis, 0.0) for axis in AXES)
         self._key_next = {}
         self._key_held = {}
         self._children = []  # exec actions, kept so they can be reaped
+        self.clutches = 0
 
     # -- profile -----------------------------------------------------------
 
@@ -979,10 +1137,12 @@ class GestureEngine(object):
         self._frac_y = 0.0
         self._hires = {"wheel": 0.0, "hwheel": 0.0}
         self._detent = {"wheel": 0.0, "hwheel": 0.0}
+        self._smoothed = dict((axis, 0.0) for axis in AXES)
         return True
 
     def release_all(self):
         """Drop the active gesture and every key the device is holding."""
+        had_gesture = self.active is not None
         self.active = None
         self._key_next = {}
         self._key_held = {}
@@ -990,6 +1150,11 @@ class GestureEngine(object):
             self.device.release_all()
         except OSError as exc:
             self.log("could not release keys: %s" % exc)
+        if had_gesture and self.cursor is not None:
+            try:
+                self.cursor.end()
+            except Exception as exc:  # noqa: BLE001
+                self.log("could not restore the cursor: %s" % exc)
 
     @property
     def active_name(self):
@@ -997,22 +1162,58 @@ class GestureEngine(object):
 
     # -- gesture selection -------------------------------------------------
 
-    def _activate(self, gesture, now):
-        self.active = gesture
-        self.active_since = now
-        self.last_above = now
+    def _press(self, gesture):
         for code in gesture.hold:
             self.device.key_down(code)
         if gesture.hold:
             self.device.syn()
 
-    def _deactivate(self):
-        if self.active is None:
-            return
-        for code in reversed(self.active.hold):
+    def _release(self, gesture):
+        for code in reversed(gesture.hold):
             self.device.key_up(code)
         self.device.syn()
+
+    def _activate(self, gesture, now, warp=True):
+        """Start a drag: park the pointer, then put the button down.
+
+        The order matters. The button has to land where the drag is going to
+        happen, so the warp goes first and the press follows.
+        """
+        self.active = gesture
+        self.active_since = now
+        self.last_above = now
+        if warp and self.cursor is not None:
+            try:
+                self.cursor.begin()
+            except Exception as exc:  # noqa: BLE001
+                self.log("could not park the cursor: %s" % exc)
+        self._press(gesture)
+
+    def _deactivate(self, unwarp=True):
+        if self.active is None:
+            return
+        self._release(self.active)
         self.active = None
+        if unwarp and self.cursor is not None:
+            try:
+                self.cursor.end()
+            except Exception as exc:  # noqa: BLE001
+                self.log("could not restore the cursor: %s" % exc)
+
+    def _clutch(self, gesture):
+        """Lift, recentre, press again, all inside one tick.
+
+        Without this a long orbit walks the pointer into a screen edge and
+        simply stops, which is the single most irritating thing a synthetic
+        drag can do.
+        """
+        self._release(gesture)
+        try:
+            self.cursor.clutch()
+        except Exception as exc:  # noqa: BLE001
+            self.log("clutch failed: %s" % exc)
+        self._press(gesture)
+        self.clutches += 1
 
     def tick(self, raw_axes, dt, profile_set=None):
         if self.profile.type in ("native", "off"):
@@ -1027,42 +1228,89 @@ class GestureEngine(object):
         if self.profile.type == "keys":
             self._tick_keys(norm, dt)
             return
-        self._tick_mouse(norm, dt)
+        self._tick_mouse(norm, dt, dict(zip(AXES, raw_axes, strict=False)))
 
-    def _tick_mouse(self, norm, dt):
+    def smooth(self, norm, dt):
+        """A short exponential average, so the puck's jitter does not show.
+
+        The time constant is in milliseconds of "how long until it has caught
+        up", which is the number a person can actually reason about: 30 ms is
+        invisible to the hand but removes the single-sample noise that makes a
+        synthetic drag look nervous. Zero turns it off.
+        """
+        tau = float(self.settings.get("smoothing_ms", 30.0)) / 1000.0
+        if tau <= 0.0 or dt <= 0.0:
+            self._smoothed = dict(norm)
+            return dict(norm)
+        alpha = 1.0 - math.exp(-dt / tau)
+        out = {}
+        for axis in AXES:
+            previous = self._smoothed.get(axis, 0.0)
+            value = norm.get(axis, 0.0)
+            # Snap to zero the moment the puck is back in the deadzone: a
+            # decaying tail there would keep a gesture alive after the hand
+            # has let go.
+            blended = 0.0 if value == 0.0 else previous + (value - previous) * alpha
+            self._smoothed[axis] = blended
+            out[axis] = blended
+        return out
+
+    def _tick_mouse(self, norm, dt, raw=None):
         now = self.clock()
         settings = self.settings
-        activate = float(settings.get("activate_threshold", 0.12))
-        release = float(settings.get("release_threshold", 0.05))
-        idle = float(settings.get("idle_release_ms", 150.0)) / 1000.0
+        raw = raw or {}
+        engage = float(settings.get("engage_deadzone", 24.0))
+        norm = self.smooth(norm, dt)
+        activate = float(settings.get("activate_threshold", 0.0))
+        release = float(settings.get("release_threshold", 0.0))
+        idle = float(settings.get("idle_release_ms", 80.0)) / 1000.0
         ratio = float(settings.get("dominance_ratio", 1.35))
+
+        # Wheel groups run on their own, alongside whatever drag is happening.
+        # Zooming while orbiting is what a real 3Dconnexion driver does, and
+        # the wheel holds no buttons, so there is nothing to arbitrate.
+        for gesture in self.profile.wheel_gestures:
+            if gesture.magnitude(norm) > 0.0:
+                self._emit(gesture, norm, dt)
+
+        drags = self.profile.drag_gestures
+        if not drags:
+            return
 
         magnitudes = {}
         best = None
         best_magnitude = 0.0
-        for gesture in self.profile.gestures:
+        for gesture in drags:
             magnitude = gesture.magnitude(norm)
             magnitudes[gesture.name] = magnitude
             if magnitude > best_magnitude:
                 best = gesture
                 best_magnitude = magnitude
 
+        startable = (
+            best is not None
+            and best_magnitude > 0.0
+            and best_magnitude >= activate
+            and best.raw_deflection(raw) >= engage
+        )
+
         if self.active is not None:
             current = magnitudes.get(self.active.name, 0.0)
-            if current >= release:
+            if current > 0.0 and current >= release:
                 self.last_above = now
             elif now - self.last_above >= idle:
                 self._deactivate()
             if (
                 self.active is not None
-                and best is not None
+                and startable
                 and best is not self.active
-                and best_magnitude >= activate
                 and best_magnitude > current * ratio
             ):
-                self._deactivate()
-                self._activate(best, now)
-        if self.active is None and best is not None and best_magnitude >= activate:
+                # Orbit to pan and back is a change of button, not a new drag:
+                # the pointer stays where it is, so the view does not jump.
+                self._deactivate(unwarp=False)
+                self._activate(best, now, warp=False)
+        if self.active is None and startable:
             self._activate(best, now)
 
         if self.active is None:
@@ -1089,7 +1337,11 @@ class GestureEngine(object):
                 wheel[target] += value * wheel_speed * gesture.speed * dt
 
         moved = False
+        needs_clutch = False
         if dx or dy:
+            # Sub-pixel motion is kept, not thrown away: at 120 Hz a gentle
+            # deflection is a fraction of a pixel per tick, and rounding each
+            # tick on its own would turn it into nothing at all.
             self._frac_x += dx
             self._frac_y += dy
             step_x = int(self._frac_x)
@@ -1099,6 +1351,11 @@ class GestureEngine(object):
             if step_x or step_y:
                 self.device.move(step_x, step_y)
                 moved = True
+                if gesture is self.active and self.cursor is not None:
+                    try:
+                        needs_clutch = self.cursor.moved(step_x, step_y)
+                    except Exception as exc:  # noqa: BLE001
+                        self.log("cursor bookkeeping failed: %s" % exc)
 
         for target in ("wheel", "hwheel"):
             detents = wheel[target]
@@ -1125,6 +1382,8 @@ class GestureEngine(object):
                 moved = True
         if moved:
             self.device.syn()
+        if needs_clutch:
+            self._clutch(gesture)
 
     # -- keys profile ------------------------------------------------------
 
@@ -1256,6 +1515,209 @@ def parse_activewindow(payload):
         return payload, ""
     window_class, title = payload.split(",", 1)
     return window_class, title
+
+
+def hypr_json(command):
+    payload = hypr_request(command)
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except ValueError:
+        return None
+
+
+def hypr_cursor_position():
+    data = hypr_json("j/cursorpos")
+    if not isinstance(data, dict):
+        return None
+    try:
+        return int(data["x"]), int(data["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def hypr_warp_cursor(x, y):
+    """Put the pointer exactly here. Hyprland 0.56 speaks Lua dispatchers."""
+    answer = hypr_request(
+        "dispatch hl.dsp.cursor.move({ x = %d, y = %d })" % (int(x), int(y))
+    )
+    return answer is not None and answer.strip().startswith("ok")
+
+
+def hypr_focus_window(address):
+    answer = hypr_request("dispatch hl.dsp.focus({ window = 'address:%s' })" % address)
+    return answer is not None and answer.strip().startswith("ok")
+
+
+def hypr_active_geometry():
+    """(address, x, y, width, height) for the focused window, or None."""
+    data = hypr_json("j/activewindow")
+    if not isinstance(data, dict):
+        return None
+    at = data.get("at")
+    size = data.get("size")
+    address = data.get("address") or ""
+    if not (isinstance(at, list) and isinstance(size, list)):
+        return None
+    if len(at) < 2 or len(size) < 2:
+        return None
+    try:
+        x, y = int(at[0]), int(at[1])
+        width, height = int(size[0]), int(size[1])
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return address, x, y, width, height
+
+
+def hypr_set_flat_acceleration(name_prefix="omarchy-spacemouse"):
+    """Take pointer acceleration out of the loop for our own device.
+
+    With an acceleration curve in the way, a given stream of relative deltas
+    lands somewhere different every time depending on how fast it arrives,
+    which makes both the clutch arithmetic and the tests approximate. Hyprland
+    renames devices (lowercased, dashed, numbered), so the rule has to be
+    applied to whatever it is calling ours right now.
+    """
+    data = hypr_json("j/devices")
+    if not isinstance(data, dict):
+        return []
+    applied = []
+    for mouse in data.get("mice") or []:
+        name = str(mouse.get("name") or "")
+        if not name.startswith(name_prefix):
+            continue
+        answer = hypr_request(
+            'eval hl.device({ name = "%s", accel_profile = "flat" })' % name
+        )
+        if answer is not None and answer.strip().startswith("ok"):
+            applied.append(name)
+    return applied
+
+
+class CursorController(object):
+    """Keeps a drag inside the window, and puts the pointer back afterwards.
+
+    This is the part that makes the puck feel like a puck rather than like a
+    mouse being shoved around. A drag starts by parking the pointer in the
+    middle of the window the user is looking at, so there is room to move in
+    every direction; when the drag ends the pointer goes back where it was, as
+    if it had never left. A long drag would still reach a screen edge and die
+    there, so once it has travelled about a third of the window the button is
+    lifted, the pointer is recentred and the button goes down again: a clutch,
+    the same trick a hand does on a steering wheel.
+    """
+
+    def __init__(self, settings=None, log=None, hypr=None):
+        self.settings = settings if settings is not None else {}
+        self.log = log or (lambda message: None)
+        # Injection point for the tests: anything with the four hypr_* calls.
+        self.hypr = hypr or self
+        self.saved = None
+        self.geometry = None
+        self.address = ""
+        self.centre = None
+        self.travel_x = 0.0
+        self.travel_y = 0.0
+        self.active = False
+        self.clutches = 0
+        self.available = True
+
+    # -- the Hyprland calls, in one place so a test can replace them --------
+
+    def cursor_position(self):
+        return hypr_cursor_position()
+
+    def warp(self, x, y):
+        return hypr_warp_cursor(x, y)
+
+    def geometry_of_focus(self):
+        return hypr_active_geometry()
+
+    def focus(self, address):
+        return hypr_focus_window(address)
+
+    def active_address(self):
+        data = hypr_json("j/activewindow")
+        return str(data.get("address") or "") if isinstance(data, dict) else ""
+
+    # -- lifecycle ---------------------------------------------------------
+
+    @property
+    def enabled(self):
+        return bool(self.settings.get("cursor_warp", True))
+
+    def begin(self):
+        """Save where the pointer is and park it in the middle of the window."""
+        self.active = False
+        self.saved = None
+        self.geometry = None
+        self.centre = None
+        self.address = ""
+        self.travel_x = 0.0
+        self.travel_y = 0.0
+        if not self.enabled:
+            return False
+        geometry = self.hypr.geometry_of_focus()
+        if geometry is None:
+            return False
+        self.address, x, y, width, height = geometry
+        self.geometry = (x, y, width, height)
+        self.saved = self.hypr.cursor_position()
+        self.centre = (x + width // 2, y + height // 2)
+        if not self.hypr.warp(*self.centre):
+            self.saved = None
+            self.centre = None
+            return False
+        self.active = True
+        return True
+
+    def moved(self, dx, dy):
+        """Feed the emitted motion in. True when the drag needs a clutch."""
+        if not self.active or self.geometry is None:
+            return False
+        self.travel_x += dx
+        self.travel_y += dy
+        fraction = float(self.settings.get("clutch_fraction", 0.35))
+        _, _, width, height = self.geometry
+        return (
+            abs(self.travel_x) >= width * fraction
+            or abs(self.travel_y) >= height * fraction
+        )
+
+    def clutch(self):
+        """Recentre mid-drag. The caller lifts and presses the buttons."""
+        if not self.active or self.centre is None:
+            return False
+        self.travel_x = 0.0
+        self.travel_y = 0.0
+        self.clutches += 1
+        return self.hypr.warp(*self.centre)
+
+    def end(self):
+        """Put the pointer back, and the focus with it."""
+        if not self.active:
+            self.active = False
+            return False
+        saved, address = self.saved, self.address
+        self.active = False
+        self.saved = None
+        self.centre = None
+        self.geometry = None
+        if saved is None:
+            return False
+        warped = self.hypr.warp(*saved)
+        # follow_mouse is on by default, so landing the pointer back on some
+        # other window would hand it the focus. Take it back if that happened.
+        if warped and address:
+            try:
+                if self.hypr.active_address() != address:
+                    self.hypr.focus(address)
+            except Exception:  # noqa: BLE001
+                pass
+        return warped
 
 
 class FocusWatcher(threading.Thread):
@@ -1435,6 +1897,563 @@ class ReplayReader(threading.Thread):
 
 
 # ---------------------------------------------------------------------------
+# pointer arbitration
+# ---------------------------------------------------------------------------
+#
+# Wayland has one pointer. With a hand on the mouse and a hand on the puck,
+# both feed that same pointer, and a drag gesture ends up carrying whatever
+# the mouse did as well: the view goes crooked.
+#
+# The fix is to put the physical mice behind the same virtual device the puck
+# uses. Each one is grabbed with EVIOCGRAB, so the kernel stops handing its
+# events to anyone else, and every event is written straight back out through
+# our device. Outside a gesture that is a pass-through nobody can feel. During
+# a gesture the pointer motion is dropped and everything else still goes
+# through, so the mouse's buttons and wheel keep working while the puck owns
+# the drag.
+#
+# The mouse must never die. Four things stand between it and that:
+#   * the kernel releases a grab when the fd closes, whatever killed us,
+#   * a watchdog releases every grab if the main loop stops ticking,
+#   * `spacemouse-ctl pointer shared` gives the grabs up on demand,
+#   * anything unexpected (no permission, no virtual device, an unreadable
+#     node) means no grab at all, and the daemon carries on as before.
+
+
+def udev_properties(minor):
+    """The E: lines udev recorded for character device 13:<minor>."""
+    path = "/run/udev/data/c13:%d" % minor
+    properties = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.startswith("E:"):
+                    continue
+                key, _, value = line[2:].strip().partition("=")
+                properties[key] = value
+    except OSError:
+        return {}
+    return properties
+
+
+def read_sysfs(path, default=""):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read().strip()
+    except OSError:
+        return default
+
+
+def capability_mask(path):
+    """Parse a /sys/class/input/*/device/capabilities/* bitmask into an int."""
+    text = read_sysfs(path)
+    if not text:
+        return 0
+    value = 0
+    for word in text.split():
+        value = (value << 64) | int(word, 16)
+    return value
+
+
+class PointerCandidate(object):
+    """One /dev/input/eventN, and everything needed to decide about it."""
+
+    __slots__ = (
+        "path",
+        "node",
+        "name",
+        "sysname",
+        "vendor",
+        "product",
+        "properties",
+        "rel_mask",
+        "key_mask",
+        "minor",
+    )
+
+    def __init__(self, node):
+        self.node = node
+        self.path = "/dev/input/%s" % node
+        base = "/sys/class/input/%s" % node
+        self.name = read_sysfs("%s/device/name" % base)
+        self.sysname = (
+            os.path.basename(os.path.dirname(os.path.realpath("%s/device" % base)))
+            or ""
+        )
+        # The inputN this event node belongs to, which is what uinput's
+        # UI_GET_SYSNAME hands back for our own device.
+        parent = os.path.realpath(base)
+        self.sysname = os.path.basename(os.path.dirname(parent))
+        self.vendor = read_sysfs("%s/device/id/vendor" % base).lower()
+        self.product = read_sysfs("%s/device/id/product" % base).lower()
+        dev = read_sysfs("%s/dev" % base)
+        self.minor = int(dev.split(":")[1]) if ":" in dev else -1
+        self.properties = udev_properties(self.minor) if self.minor >= 0 else {}
+        self.rel_mask = capability_mask("%s/device/capabilities/rel" % base)
+        self.key_mask = capability_mask("%s/device/capabilities/key" % base)
+
+    @property
+    def ident(self):
+        return "%s:%s" % (self.vendor, self.product)
+
+    @property
+    def looks_like_a_mouse(self):
+        """A pointer udev tagged as a mouse, or one that plainly is one."""
+        if self.properties.get("ID_INPUT_MOUSE") == "1":
+            return True
+        if self.properties:
+            return False
+        # No udev database (a container, a very early boot): fall back to the
+        # capabilities. A mouse has both relative axes and a left button.
+        has_axes = (self.rel_mask >> REL_X) & 1 and (self.rel_mask >> REL_Y) & 1
+        return bool(has_axes and (self.key_mask >> BTN_LEFT) & 1)
+
+    def __repr__(self):
+        return "PointerCandidate(%s, %r)" % (self.node, self.name)
+
+
+def list_pointer_candidates(directory="/dev/input"):
+    try:
+        nodes = sorted(
+            entry for entry in os.listdir(directory) if entry.startswith("event")
+        )
+    except OSError:
+        return []
+    out = []
+    for node in nodes:
+        try:
+            out.append(PointerCandidate(node))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+class PointerSelector(object):
+    """Decides which physical pointers may be grabbed, and says why not."""
+
+    def __init__(self, settings=None, own_sysname="", own_name=DEVICE_NAME):
+        settings = settings or {}
+        self.own_sysname = own_sysname
+        self.own_name = own_name
+        self.exclude_names = list(
+            settings.get("pointer_exclude_names", DEFAULT_POINTER_EXCLUDE_NAMES)
+        )
+        self.exclude_ids = set(
+            item.lower()
+            for item in settings.get("pointer_exclude_ids", DEFAULT_POINTER_EXCLUDE_IDS)
+        )
+        include = settings.get("pointer_include", "")
+        self.include = re.compile(include, re.IGNORECASE) if include else None
+
+    def rejection(self, candidate):
+        """Why this device may not be grabbed, or None if it may."""
+        # Never our own device, at any cost: proxying our own output back into
+        # ourselves is an infinite loop that would flood the pointer.
+        if self.own_sysname and candidate.sysname == self.own_sysname:
+            return "our own virtual device"
+        if self.include is not None and self.include.search(candidate.name or ""):
+            return None
+        if candidate.name == self.own_name:
+            return "carries our device's name"
+        for key in POINTER_REJECT_PROPERTIES:
+            if candidate.properties.get(key) == "1":
+                return key.replace("ID_INPUT_", "").lower()
+        if not candidate.looks_like_a_mouse:
+            return "not a mouse"
+        if candidate.ident in self.exclude_ids:
+            return "excluded id %s" % candidate.ident
+        for fragment in self.exclude_names:
+            if fragment and fragment.lower() in (candidate.name or "").lower():
+                return "excluded name (%s)" % fragment
+        return None
+
+    def select(self, candidates):
+        return [c for c in candidates if self.rejection(c) is None]
+
+
+class GrabbedPointer(object):
+    """One physical mouse, open and grabbed, with its own partial batch."""
+
+    def __init__(self, candidate, fd, io=None):
+        self.candidate = candidate
+        self.path = candidate.path
+        self.name = candidate.name
+        self.fd = fd
+        self.io = io or UinputIO()
+        self.grabbed = False
+        self.pending = []
+        self.dropped_rel = 0
+        self.forwarded = 0
+
+    def grab(self):
+        if self.grabbed:
+            return True
+        self.io.ioctl(self.fd, EVIOCGRAB, 1)
+        self.grabbed = True
+        return True
+
+    def ungrab(self):
+        """Give the device back. Safe to call from any thread, at any time."""
+        if not self.grabbed:
+            return
+        try:
+            self.io.ioctl(self.fd, EVIOCGRAB, 0)
+        except OSError:
+            pass
+        self.grabbed = False
+
+    def close(self):
+        self.ungrab()
+        try:
+            self.io.close(self.fd)
+        except OSError:
+            pass
+        self.fd = None
+
+
+def filter_forwarded(events, suppress_motion):
+    """Keep what our virtual device can carry; drop pointer motion on demand.
+
+    Returns None when the batch has nothing left worth sending, so a gesture
+    that swallows every event does not also send a bare SYN_REPORT.
+    """
+    out = []
+    for etype, code, value in events:
+        if etype == EV_REL:
+            if code not in REL_CODES:
+                continue
+            if suppress_motion and code in (REL_X, REL_Y):
+                continue
+        elif etype == EV_KEY:
+            if code not in MOUSE_BUTTON_CODES and not (1 <= code <= 255):
+                continue
+        elif etype == EV_MSC:
+            if code != MSC_SCAN:
+                continue
+        else:
+            continue
+        out.append((etype, code, value))
+    if not out:
+        return None
+    # A batch of nothing but scancodes carries no state of its own.
+    if all(etype == EV_MSC for etype, _, _ in out):
+        return None
+    return out
+
+
+class PointerProxy(threading.Thread):
+    """Grabs the physical mice and pipes them through the virtual device."""
+
+    daemon = True
+    RESCAN_SECONDS = 3.0
+
+    def __init__(self, daemon_ref, stop_event, log=None, io=None):
+        threading.Thread.__init__(self, name="pointer-proxy")
+        self.daemon_ref = daemon_ref
+        self.stop_event = stop_event
+        self.log = log or (lambda message: None)
+        self.io = io or UinputIO()
+        self.pointers = {}  # path -> GrabbedPointer
+        self.lock = threading.RLock()
+        self.state = "shared"
+        self.detail = ""
+        self._complaint = ""
+        self._last_scan = 0.0
+        self.gesture_grab = False
+        self.grab_cycles = 0
+
+    @property
+    def grab_policy(self):
+        return str(self.daemon_ref.profile_set.settings.get("pointer_grab", "gesture"))
+
+    def set_gesture(self, active):
+        """Take the mice for the length of a drag, and give them back after.
+
+        Called straight from the main loop rather than from this thread, so
+        the grab is in place before the first synthetic delta goes out; a
+        proxy waking up on its own schedule would let the first few
+        milliseconds of hand movement through.
+        """
+        if self.grab_policy != "gesture":
+            return
+        active = bool(active)
+        if active == self.gesture_grab:
+            return
+        self.gesture_grab = active
+        with self.lock:
+            for pointer in self.pointers.values():
+                try:
+                    if active:
+                        pointer.grab()
+                    else:
+                        pointer.ungrab()
+                except OSError as exc:
+                    self.complain("could not %s %s: %s"
+                                  % ("grab" if active else "release", pointer.name, exc))
+        if active:
+            self.grab_cycles += 1
+
+    # -- state -------------------------------------------------------------
+
+    @property
+    def device_names(self):
+        with self.lock:
+            return [pointer.name for pointer in self.pointers.values()]
+
+    def describe(self):
+        if self.state != "proxied":
+            return (
+                self.state if not self.detail else "%s (%s)" % (self.state, self.detail)
+            )
+        names = self.device_names
+        if not names:
+            return "proxied (nothing to grab)"
+        return "proxied (%s)" % ", ".join(names)
+
+    @property
+    def holding(self):
+        with self.lock:
+            return any(p.grabbed for p in self.pointers.values())
+
+    # -- grabbing ----------------------------------------------------------
+
+    def why_not(self):
+        """Why the proxy is standing down, or None when it should be running."""
+        if self.stop_event.is_set():
+            return "shutting down"
+        if self.daemon_ref.pointer_mode != "proxied":
+            return "turned off"
+        device = self.daemon_ref.device
+        if device is None or not device.is_open:
+            return "no virtual device"
+        if not self.daemon_ref.main_loop_is_alive():
+            return "main loop stalled"
+        return None
+
+    def wanted(self):
+        """True while the daemon wants the mice watched."""
+        return self.why_not() is None
+
+    def complain(self, message):
+        if self._complaint != message:
+            self._complaint = message
+            self.log(message)
+
+    def scan(self):
+        """Grab anything new, drop anything that disappeared."""
+        selector = PointerSelector(
+            self.daemon_ref.profile_set.settings,
+            own_sysname=getattr(self.daemon_ref.device, "sysname", ""),
+        )
+        candidates = list_pointer_candidates()
+        wanted = {}
+        denied = []
+        for candidate in selector.select(candidates):
+            wanted[candidate.path] = candidate
+
+        with self.lock:
+            for path in list(self.pointers):
+                if path not in wanted:
+                    pointer = self.pointers.pop(path)
+                    self.log("released %s (%s)" % (pointer.name, path))
+                    pointer.close()
+
+            for path, candidate in wanted.items():
+                if path in self.pointers:
+                    continue
+                try:
+                    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                except OSError as exc:
+                    if exc.errno in (errno.EACCES, errno.EPERM):
+                        denied.append(candidate.name or path)
+                    continue
+                pointer = GrabbedPointer(candidate, fd, io=self.io)
+                if self.grab_policy != "gesture" or self.gesture_grab:
+                    try:
+                        pointer.grab()
+                    except OSError as exc:
+                        self.complain("cannot grab %s: %s" % (candidate.name, exc))
+                        pointer.close()
+                        continue
+                self.pointers[path] = pointer
+                self.log("watching %s (%s)" % (candidate.name, path))
+
+            held = len(self.pointers)
+
+        if held:
+            self.state = "proxied"
+            self.detail = ""
+            self._complaint = ""
+        elif denied:
+            self.state = "shared"
+            self.detail = "no permission"
+            self.complain(
+                "cannot read %s, so the mouse stays on its own: add the udev rule "
+                'from the README (SUBSYSTEM=="input", ENV{ID_INPUT_MOUSE}=="1")'
+                % ", ".join(sorted(set(denied)))
+            )
+        else:
+            self.state = "shared"
+            self.detail = "nothing to proxy"
+
+    def release_all(self, reason=""):
+        """Hand every mouse back to the rest of the system, right now."""
+        with self.lock:
+            if not self.pointers:
+                self.gesture_grab = False
+                return
+            for pointer in self.pointers.values():
+                pointer.ungrab()
+                try:
+                    self.io.close(pointer.fd)
+                except OSError:
+                    pass
+                pointer.fd = None
+            count = len(self.pointers)
+            self.pointers = {}
+        self.gesture_grab = False
+        if self.state == "proxied":
+            self.state = "shared"
+            self.detail = reason
+        self.log(
+            "released %d pointer(s)%s" % (count, (": " + reason) if reason else "")
+        )
+
+    # -- the loop ----------------------------------------------------------
+
+    def run(self):
+        while not self.stop_event.is_set():
+            reason = self.why_not()
+            if reason is not None:
+                self.release_all(reason)
+                self.state = "shared"
+                self.detail = reason
+                self.stop_event.wait(0.5)
+                continue
+
+            now = time.monotonic()
+            if now - self._last_scan >= self.RESCAN_SECONDS:
+                self._last_scan = now
+                try:
+                    self.scan()
+                except Exception as exc:  # noqa: BLE001
+                    self.complain("pointer scan failed: %s" % exc)
+
+            with self.lock:
+                fds = [p.fd for p in self.pointers.values() if p.fd is not None]
+            if not fds:
+                self.stop_event.wait(0.3)
+                continue
+            try:
+                ready, _, _ = select.select(fds, [], [], 0.2)
+            except (OSError, ValueError):
+                # A device vanished under us; the next scan sorts it out.
+                self._last_scan = 0.0
+                continue
+            for fd in ready:
+                self.pump(fd)
+        self.release_all("shutting down")
+
+    def pump(self, fd):
+        with self.lock:
+            pointer = next((p for p in self.pointers.values() if p.fd == fd), None)
+        if pointer is None:
+            return
+        try:
+            blob = os.read(fd, INPUT_EVENT_SIZE * 64)
+        except BlockingIOError:
+            return
+        except OSError:
+            # Unplugged mid-read. Drop it and let the next scan settle.
+            with self.lock:
+                self.pointers.pop(pointer.path, None)
+            pointer.close()
+            self._last_scan = 0.0
+            return
+        for index in range(len(blob) // INPUT_EVENT_SIZE):
+            chunk = blob[index * INPUT_EVENT_SIZE : (index + 1) * INPUT_EVENT_SIZE]
+            _, _, etype, code, value = struct.unpack(INPUT_EVENT_FMT, chunk)
+            if etype == EV_SYN:
+                if code == SYN_REPORT:
+                    self.flush(pointer)
+                else:
+                    pointer.pending = []
+                continue
+            pointer.pending.append((etype, code, value))
+
+    def flush(self, pointer):
+        events, pointer.pending = pointer.pending, []
+        if not events:
+            return
+        if not pointer.grabbed:
+            # Not ours: the kernel is delivering these to the compositor as
+            # well, and forwarding them too would double every movement. Read
+            # and drop, so the buffer never backs up.
+            return
+        suppress = self.daemon_ref.gesture_active
+        batch = filter_forwarded(events, suppress)
+        if suppress:
+            pointer.dropped_rel += sum(
+                1
+                for etype, code, _ in events
+                if etype == EV_REL and code in (REL_X, REL_Y)
+            )
+        if not batch:
+            return
+        device = self.daemon_ref.device
+        if device is None or not device.is_open:
+            return
+        try:
+            device.forward(batch)
+            pointer.forwarded += len(batch)
+        except OSError as exc:
+            self.complain("could not forward pointer events: %s" % exc)
+
+
+class PointerWatchdog(threading.Thread):
+    """Releases every grab if the main loop stops ticking.
+
+    This is the part that has to work when nothing else does. It keeps no
+    state of its own, touches only ioctl(EVIOCGRAB, 0), and runs as a daemon
+    thread so it cannot hold the process open.
+    """
+
+    daemon = True
+
+    def __init__(self, daemon_ref, proxy, stop_event, timeout=1.0, log=None):
+        threading.Thread.__init__(self, name="pointer-watchdog")
+        self.daemon_ref = daemon_ref
+        self.proxy = proxy
+        self.stop_event = stop_event
+        self.timeout = timeout
+        self.log = log or (lambda message: None)
+        self.trips = 0
+
+    def check(self, now=None):
+        """One pass. Returns True if it had to let the mice go."""
+        if self.daemon_ref.main_loop_is_alive(now):
+            return False
+        if not self.proxy.pointers:
+            return False
+        self.trips += 1
+        self.log(
+            "main loop has not ticked for %.1f s, releasing the pointers"
+            % self.daemon_ref.ticks_ago(now)
+        )
+        self.proxy.release_all("watchdog")
+        return True
+
+    def run(self):
+        while not self.stop_event.wait(0.25):
+            try:
+                self.check()
+            except Exception as exc:  # noqa: BLE001
+                self.log("watchdog error: %s" % exc)
+        # Whatever ends the process, the mice come back first.
+        self.proxy.release_all("shutdown")
+
+
+# ---------------------------------------------------------------------------
 # control socket
 # ---------------------------------------------------------------------------
 
@@ -1568,6 +2587,32 @@ class SpaceMouseDaemon(object):
         self.focus = None
         self._control_server = None
 
+        # Pointer arbitration.
+        self.cursor = CursorController(self.profile_set.settings, log=self.log)
+        self.pointer = None
+        self.watchdog = None
+        self.pointer_mode = str(
+            self.profile_set.settings.get("pointer_mode", "proxied")
+        )
+        if args.pointer_mode:
+            self.pointer_mode = args.pointer_mode
+        # The watchdog reads this: every pass of the main loop stamps it, and
+        # a stale stamp means the mice have to be handed back.
+        self.last_tick = time.monotonic()
+        self.tick_timeout = 1.0
+        self.gesture_active = False
+
+    # -- heartbeat ---------------------------------------------------------
+
+    def beat(self):
+        self.last_tick = time.monotonic()
+
+    def ticks_ago(self, now=None):
+        return (now if now is not None else time.monotonic()) - self.last_tick
+
+    def main_loop_is_alive(self, now=None):
+        return self.ticks_ago(now) <= self.tick_timeout
+
     # -- logging -----------------------------------------------------------
 
     def log(self, message):
@@ -1645,7 +2690,16 @@ class SpaceMouseDaemon(object):
         self.uinput_detail = ""
         self._uinput_complaint = ""
         self.status_dirty = True
-        self.log("virtual device '%s' created" % DEVICE_NAME)
+        self.log(
+            "virtual device '%s' created%s"
+            % (DEVICE_NAME, " as %s" % self.device.sysname if self.device.sysname else "")
+        )
+        if self.profile_set.settings.get("flat_acceleration", True):
+            # Do this once the device exists: Hyprland only knows about it
+            # from the moment libinput picks it up.
+            applied = hypr_set_flat_acceleration()
+            if applied:
+                self.log("acceleration set to flat for %s" % ", ".join(applied))
         return True
 
     # -- event intake ------------------------------------------------------
@@ -1759,6 +2813,10 @@ class SpaceMouseDaemon(object):
             else "disconnected",
             "uinput": self.uinput_state,
             "uinput_detail": self.uinput_detail,
+            "pointer": self.pointer.describe() if self.pointer else self.pointer_mode,
+            "pointer_mode": self.pointer_mode,
+            "pointer_devices": self.pointer.device_names if self.pointer else [],
+            "clutches": self.engine.clutches if self.engine else 0,
             "last_event": round(self.last_event, 3),
             "config": self.args.config,
             "config_error": self.profile_set.error,
@@ -1796,6 +2854,17 @@ class SpaceMouseDaemon(object):
             self.enabled = True
         elif command == "auto":
             self.manual_profile = None
+        elif command == "pointer":
+            if arg not in ("proxied", "shared"):
+                return {
+                    "ok": False,
+                    "error": "pointer takes 'proxied' or 'shared', not '%s'" % arg,
+                }
+            self.pointer_mode = arg
+            if arg == "shared" and self.pointer is not None:
+                # The escape hatch has to work immediately, not at the next
+                # pass of the proxy loop.
+                self.pointer.release_all("asked to share")
         elif command == "reload":
             self.profile_set.load()
             with self.engine_lock:
@@ -1818,8 +2887,11 @@ class SpaceMouseDaemon(object):
 
     def run(self):
         self.device = self.make_device()
+        if self.args.no_cursor_warp:
+            self.profile_set.settings["cursor_warp"] = False
+        self.cursor.settings = self.profile_set.settings
         self.engine = GestureEngine(
-            self.device, self.profile_set.settings, log=self.log
+            self.device, self.profile_set.settings, log=self.log, cursor=self.cursor
         )
 
         os.makedirs(runtime_dir(), exist_ok=True)
@@ -1861,6 +2933,12 @@ class SpaceMouseDaemon(object):
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._on_signal)
 
+        self.pointer = PointerProxy(self, self.stop_event, log=self.log)
+        self.watchdog = PointerWatchdog(self, self.pointer, self.stop_event, log=self.log)
+        self.beat()
+        self.pointer.start()
+        self.watchdog.start()
+
         self.probe_uinput()
         self.log(
             "started, %d profiles, status in %s"
@@ -1873,11 +2951,14 @@ class SpaceMouseDaemon(object):
         last_status = 0.0
         try:
             while not self.stop_event.is_set():
-                hz = float(self.profile_set.settings.get("tick_hz", 60.0)) or 60.0
+                hz = float(self.profile_set.settings.get("tick_hz", 120.0)) or 120.0
                 period = 1.0 / hz
                 now = time.monotonic()
                 dt = min(0.25, max(0.0, now - last))
                 last = now
+                # Tell the watchdog we are still here before doing anything
+                # that could block: a stale stamp hands the mice back.
+                self.beat()
 
                 if now - last_config_check >= 1.0:
                     last_config_check = now
@@ -1910,6 +2991,18 @@ class SpaceMouseDaemon(object):
                         self.engine.tick(raw, dt, self.profile_set)
                         if self.engine.active_name != before:
                             self.status_dirty = True
+                    # What the pointer proxy reads to decide whether the
+                    # physical mice may move the cursor right now.
+                    gesture = self.engine.active is not None
+                    if gesture != self.gesture_active:
+                        self.gesture_active = gesture
+                        if self.pointer is not None:
+                            self.pointer.set_gesture(gesture)
+
+                if not needs_device and self.gesture_active:
+                    self.gesture_active = False
+                    if self.pointer is not None:
+                        self.pointer.set_gesture(False)
 
                 if (
                     self.replay
@@ -1938,6 +3031,14 @@ class SpaceMouseDaemon(object):
 
     def shutdown(self):
         self.stop_event.set()
+        # Hand the physical mice back before anything else. Closing the fds
+        # would do it too, but doing it first means the pointer is never in
+        # limbo while the rest of the shutdown runs.
+        if self.pointer is not None:
+            try:
+                self.pointer.release_all("shutting down")
+            except Exception as exc:  # noqa: BLE001
+                self.log("could not release the pointers: %s" % exc)
         if self.engine:
             self.engine.release_all()
         if self.device:
@@ -2059,6 +3160,17 @@ def build_parser():
         const="-",
         default=None,
         help="decode frames from a capture (or live) and print them",
+    )
+    parser.add_argument(
+        "--pointer-mode",
+        choices=("proxied", "shared"),
+        default="",
+        help="override settings.pointer_mode for this run",
+    )
+    parser.add_argument(
+        "--no-cursor-warp",
+        action="store_true",
+        help="do not park the pointer in the window while dragging",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)

@@ -44,6 +44,11 @@ Panel {
   readonly property string uinputState: daemonAlive ? String(status.uinput || "") : ""
   readonly property bool uinputBlocked: uinputState === "denied" || uinputState === "error"
 
+  // Pointer arbitration: "proxied (<mouse>)" while the physical mice are held
+  // during gestures, "shared (...)" with the reason when they are not.
+  readonly property string pointerState: daemonAlive ? String(status.pointer || "-") : "-"
+  readonly property bool pointerProxied: pointerState.indexOf("proxied") === 0
+
   // The daemon is not emitting anything in these two, which the bar shows by
   // dimming the icon: "native" means the application talks to spacenavd on its
   // own, "off" means the profile asked for silence.
@@ -244,7 +249,8 @@ Panel {
                 { key: "Profile", value: root.profileName !== "" ? root.profileName + "  (" + root.profileType + ")" : "-" },
                 { key: "Mode", value: root.manualMode ? "manual override" : "follows focus" },
                 { key: "spacenavd", value: root.daemonAlive ? String(root.status.spnav || "-") : "-" },
-                { key: "uinput", value: root.daemonAlive ? String(root.status.uinput || "-") : "-" }
+                { key: "uinput", value: root.daemonAlive ? String(root.status.uinput || "-") : "-" },
+                { key: "pointer", value: root.pointerState }
               ]
 
               Item {
@@ -354,6 +360,17 @@ Panel {
               foreground: root.foreground
               text: "Reload profiles"
               onClicked: root.ctl("reload")
+            }
+
+            Button {
+              bordered: true
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              foreground: root.foreground
+              // The escape hatch, on the panel as well as the command line:
+              // one click hands the physical mice straight back.
+              text: root.pointerProxied ? "Share the mouse" : "Take the mouse"
+              onClicked: root.ctl("pointer", root.pointerProxied ? "shared" : "proxied")
             }
           }
         }

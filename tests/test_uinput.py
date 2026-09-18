@@ -52,13 +52,37 @@ class DeviceSetupTest(unittest.TestCase):
         self.assertEqual(self.io.opened, ["/dev/uinput"])
         requests = [request for request, _ in self.io.ioctls]
         self.assertIn(sm.UI_DEV_CREATE, requests)
-        self.assertEqual(requests[-1], sm.UI_DEV_CREATE)
+        # Every capability has to be declared before the device is created,
+        # and the sysname can only be read afterwards.
+        create = requests.index(sm.UI_DEV_CREATE)
+        for bit in (sm.UI_SET_EVBIT, sm.UI_SET_KEYBIT, sm.UI_SET_RELBIT, sm.UI_SET_MSCBIT):
+            self.assertLess(max(i for i, r in enumerate(requests) if r == bit), create)
+        self.assertGreater(requests.index(sm.UI_GET_SYSNAME), create)
 
-    def test_it_declares_key_and_rel_capabilities(self):
+    def test_it_declares_key_rel_msc_and_syn_capabilities(self):
+        # EV_MSC is there for the proxied physical mice: they send MSC_SCAN
+        # alongside every button, and an undeclared type would be dropped.
         self.assertEqual(
             sorted(self.io.requests(sm.UI_SET_EVBIT)),
-            sorted([sm.EV_KEY, sm.EV_REL, sm.EV_SYN]),
+            sorted([sm.EV_KEY, sm.EV_REL, sm.EV_SYN, sm.EV_MSC]),
         )
+        self.assertEqual(self.io.requests(sm.UI_SET_MSCBIT), [sm.MSC_SCAN])
+
+    def test_it_declares_the_media_keys_a_proxied_mouse_may_carry(self):
+        keybits = set(self.io.requests(sm.UI_SET_KEYBIT))
+        for code in (115, 164, 255):          # VOLUMEUP, PLAYPAUSE, top of range
+            self.assertIn(code, keybits, "keycode %d missing" % code)
+
+    def test_it_stops_before_the_joystick_button_block(self):
+        # BTN_JOYSTICK (0x120) and BTN_GAMEPAD (0x130) would have udev tag
+        # this device as a joystick, which libinput handles very differently.
+        keybits = set(self.io.requests(sm.UI_SET_KEYBIT))
+        for code in (0x120, 0x130, 0x13F):
+            self.assertNotIn(code, keybits)
+
+    def test_it_learns_its_own_sysname(self):
+        # Set by the fake io, which answers UI_GET_SYSNAME with "input99".
+        self.assertEqual(self.device.sysname, "input99")
 
     def test_it_enables_the_mouse_buttons(self):
         keybits = self.io.requests(sm.UI_SET_KEYBIT)

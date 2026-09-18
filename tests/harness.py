@@ -32,11 +32,13 @@ sm = load_daemon()
 class FakeIO(object):
     """Stands in for the uinput syscalls and records everything it is told."""
 
-    def __init__(self, fail_open=None, fail_setup=False):
+    def __init__(self, fail_open=None, fail_setup=False, sysname="input99"):
         self.fail_open = fail_open  # an OSError to raise from open()
         self.fail_setup = fail_setup  # make UI_DEV_SETUP fail
+        self.sysname = sysname
         self.opened = []
         self.ioctls = []  # (request, arg)
+        self.grabs = []  # (fd, 1 or 0) for every EVIOCGRAB
         self.writes = []  # bytes
         self.closed = []
         self.next_fd = 42
@@ -52,6 +54,14 @@ class FakeIO(object):
     def ioctl(self, fd, request, arg=0):
         if self.fail_setup and request == sm.UI_DEV_SETUP:
             raise OSError(25, "Inappropriate ioctl for device")
+        if request == sm.UI_GET_SYSNAME and isinstance(arg, (bytearray, memoryview)):
+            # The kernel writes the sysname into the caller's buffer.
+            answer = self.sysname.encode("utf-8") + b"\x00"
+            arg[: len(answer)] = answer
+            self.ioctls.append((request, bytes(answer)))
+            return 0
+        if request == sm.EVIOCGRAB:
+            self.grabs.append((fd, arg))
         self.ioctls.append((request, arg))
         return 0
 

@@ -1,21 +1,52 @@
 {
   "version": 1,
   "settings": {
-    "tick_hz": 60,
-    "deadzone": 30,
+    "tick_hz": 120,
+    "deadzone": 18,
     "full_scale": 350,
-    "curve": 1.5,
+    "curve": 1.3,
     "sensitivity": 1.0,
-    "axis_gain": { "x": 1.0, "y": 1.0, "z": 1.0, "rx": 1.0, "ry": 1.0, "rz": 1.0 },
-    "axis_invert": { "x": false, "y": false, "z": false, "rx": false, "ry": false, "rz": false },
-    "activate_threshold": 0.12,
-    "release_threshold": 0.05,
-    "idle_release_ms": 150,
+    "axis_gain": {
+      "x": 1.0,
+      "y": 1.0,
+      "z": 1.0,
+      "rx": 1.0,
+      "ry": 1.0,
+      "rz": 1.0
+    },
+    "axis_invert": {
+      "x": false,
+      "y": false,
+      "z": false,
+      "rx": false,
+      "ry": false,
+      "rz": false
+    },
+    "activate_threshold": 0.0,
+    "release_threshold": 0.0,
+    "idle_release_ms": 80,
     "dominance_ratio": 1.35,
     "pointer_speed": 900,
     "wheel_speed": 3.0,
     "wheel_hi_res": true,
-    "spnav_socket": "/run/spnav.sock"
+    "spnav_socket": "/run/spnav.sock",
+    "engage_deadzone": 24,
+    "smoothing_ms": 30,
+    "cursor_warp": true,
+    "clutch_fraction": 0.35,
+    "flat_acceleration": true,
+    "pointer_mode": "proxied",
+    "pointer_exclude_names": [
+      "DualSense",
+      "Ducky Keyboard Mouse",
+      "SpaceMouse",
+      "SpaceNavigator"
+    ],
+    "pointer_exclude_ids": [
+      "046d:c62b",
+      "5350:4d53"
+    ],
+    "pointer_include": ""
   },
   "profiles": [
     {
@@ -25,10 +56,66 @@
       "type": "native"
     },
     {
-      "name": "fusion-bifrost",
-      "description": "Fusion 360 under Wine is driven by the Bifrost bridge, not by this daemon.",
+      "name": "fusion",
+      "description": "Fusion 360 under Wine, using Fusion's own mouse conventions: the middle button pans, shift plus the middle button orbits, the wheel zooms.",
       "match": "^fusion360\\.exe$",
-      "type": "native"
+      "type": "mouse",
+      "fit_key": "",
+      "fit_comment": "Fusion's fit command has no reliable key under Wine. Put one here (for example \"KEY_F6\") if you bind one yourself.",
+      "gestures": {
+        "pan": {
+          "enabled": true,
+          "hold": [
+            "middle"
+          ],
+          "speed": 1.0,
+          "axes": {
+            "x": {
+              "to": "dx",
+              "gain": 1.0
+            },
+            "z": {
+              "to": "dy",
+              "gain": -1.0
+            }
+          }
+        },
+        "orbit": {
+          "enabled": true,
+          "hold": [
+            "shift",
+            "middle"
+          ],
+          "speed": 1.0,
+          "axes": {
+            "rx": {
+              "to": "dy",
+              "gain": 1.0
+            },
+            "ry": {
+              "to": "dx",
+              "gain": -1.0
+            }
+          }
+        },
+        "zoom": {
+          "enabled": true,
+          "mode": "wheel",
+          "speed": 1.0,
+          "axes": {
+            "y": {
+              "to": "wheel",
+              "gain": 1.0
+            }
+          }
+        }
+      },
+      "buttons": {
+        "5": {
+          "action": "fit",
+          "label": "Fit view"
+        }
+      }
     },
     {
       "name": "desktop-off",
@@ -44,20 +131,36 @@
       "gestures": {
         "orbit": {
           "enabled": true,
-          "hold": ["left"],
+          "hold": [
+            "left"
+          ],
           "speed": 1.0,
           "axes": {
-            "rx": { "to": "dy", "gain": 1.0 },
-            "ry": { "to": "dx", "gain": -1.0 }
+            "rx": {
+              "to": "dy",
+              "gain": 1.0
+            },
+            "ry": {
+              "to": "dx",
+              "gain": -1.0
+            }
           }
         },
         "pan": {
           "enabled": true,
-          "hold": ["right"],
+          "hold": [
+            "right"
+          ],
           "speed": 1.0,
           "axes": {
-            "x": { "to": "dx", "gain": 1.0 },
-            "z": { "to": "dy", "gain": -1.0 }
+            "x": {
+              "to": "dx",
+              "gain": 1.0
+            },
+            "z": {
+              "to": "dy",
+              "gain": -1.0
+            }
           }
         },
         "zoom": {
@@ -65,20 +168,32 @@
           "mode": "wheel",
           "speed": 1.0,
           "axes": {
-            "y": { "to": "wheel", "gain": 1.0 }
+            "y": {
+              "to": "wheel",
+              "gain": 1.0
+            }
           }
         },
         "twist": {
           "enabled": false,
-          "hold": ["ctrl", "left"],
+          "hold": [
+            "ctrl",
+            "left"
+          ],
           "speed": 1.0,
           "axes": {
-            "rz": { "to": "dx", "gain": 1.0 }
+            "rz": {
+              "to": "dx",
+              "gain": 1.0
+            }
           }
         }
       },
       "buttons": {
-        "5": { "action": "fit", "label": "Fit view" }
+        "5": {
+          "action": "fit",
+          "label": "Fit view"
+        }
       }
     },
     {
@@ -90,20 +205,37 @@
       "gestures": {
         "orbit": {
           "enabled": true,
-          "hold": ["middle"],
+          "hold": [
+            "middle"
+          ],
           "speed": 1.0,
           "axes": {
-            "rx": { "to": "dy", "gain": 1.0 },
-            "ry": { "to": "dx", "gain": -1.0 }
+            "rx": {
+              "to": "dy",
+              "gain": 1.0
+            },
+            "ry": {
+              "to": "dx",
+              "gain": -1.0
+            }
           }
         },
         "pan": {
           "enabled": true,
-          "hold": ["shift", "middle"],
+          "hold": [
+            "shift",
+            "middle"
+          ],
           "speed": 1.0,
           "axes": {
-            "x": { "to": "dx", "gain": 1.0 },
-            "z": { "to": "dy", "gain": -1.0 }
+            "x": {
+              "to": "dx",
+              "gain": 1.0
+            },
+            "z": {
+              "to": "dy",
+              "gain": -1.0
+            }
           }
         },
         "zoom": {
@@ -111,20 +243,32 @@
           "mode": "wheel",
           "speed": 1.0,
           "axes": {
-            "y": { "to": "wheel", "gain": 1.0 }
+            "y": {
+              "to": "wheel",
+              "gain": 1.0
+            }
           }
         },
         "twist": {
           "enabled": false,
-          "hold": ["ctrl", "middle"],
+          "hold": [
+            "ctrl",
+            "middle"
+          ],
           "speed": 1.0,
           "axes": {
-            "rz": { "to": "dx", "gain": 1.0 }
+            "rz": {
+              "to": "dx",
+              "gain": 1.0
+            }
           }
         }
       },
       "buttons": {
-        "5": { "action": "fit", "label": "Fit view" }
+        "5": {
+          "action": "fit",
+          "label": "Fit view"
+        }
       }
     }
   ]

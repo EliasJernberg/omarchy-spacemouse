@@ -9,6 +9,8 @@
     spacemouse-ctl auto                back to following the focused window
     spacemouse-ctl reload              re-read profiles.json
     spacemouse-ctl profiles [--json]   list the profiles that are loaded
+    spacemouse-ctl pointer proxied     take the physical mice over during gestures
+    spacemouse-ctl pointer shared      hand them straight back (escape hatch)
 
 Standard library only, so it runs anywhere python3 does.
 """
@@ -19,7 +21,10 @@ import socket
 import sys
 
 APP_NAME = "omarchy-spacemouse"
-COMMANDS = ("status", "enable", "disable", "toggle", "profile", "auto", "reload", "profiles")
+COMMANDS = (
+    "status", "enable", "disable", "toggle", "profile", "auto", "reload",
+    "profiles", "pointer",
+)
 
 
 def runtime_dir():
@@ -91,6 +96,7 @@ def format_status(status):
     if status.get("uinput_detail"):
         uinput += "  (%s)" % status["uinput_detail"]
     lines.append("uinput     %s" % uinput)
+    lines.append("pointer    %s" % status.get("pointer", "?"))
     if status.get("config_error"):
         lines.append("config     ERROR: %s" % status["config_error"])
     else:
@@ -133,6 +139,9 @@ def main(argv):
         return usage(sys.stderr, 2)
     if command == "profile" and not arg:
         sys.stderr.write("spacemouse-ctl: profile needs a name\n")
+        return 2
+    if command == "pointer" and arg not in ("proxied", "shared"):
+        sys.stderr.write("spacemouse-ctl: pointer takes 'proxied' or 'shared'\n")
         return 2
 
     wire_command = "status" if command == "profiles" else command

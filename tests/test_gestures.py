@@ -90,11 +90,27 @@ class GroupSelectionTest(EngineFixture):
         self.assertEqual(self.engine.active_name, "pan")
         self.assertEqual(self.held(), [SHIFT, sm.BTN_MIDDLE])
 
-    def test_lift_starts_the_zoom_gesture_and_holds_nothing(self):
+    def test_lift_zooms_without_holding_anything(self):
         self.use(CAD_PROFILE)
-        self.tick(axes(y=300), count=3)
-        self.assertEqual(self.engine.active_name, "zoom")
+        self.settings["wheel_speed"] = 12.0
+        self.tick(axes(y=300), count=10)
+        # The wheel is not a drag: it holds no button, so it never becomes
+        # "the" gesture and never blocks one.
+        self.assertEqual(self.engine.active_name, "")
         self.assertEqual(self.held(), [])
+        self.assertTrue([v for c, v in rel_events(self.device) if c == sm.REL_WHEEL_HI_RES])
+
+    def test_zoom_runs_at_the_same_time_as_a_drag(self):
+        # 3Dconnexion's own driver lets you push into the model while turning
+        # it; the puck has six axes for a reason.
+        self.use(CAD_PROFILE)
+        self.settings["wheel_speed"] = 12.0
+        self.tick(axes(rx=300, y=300), count=10)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.assertEqual(self.held(), [sm.BTN_MIDDLE])
+        rel = rel_events(self.device)
+        self.assertTrue([v for c, v in rel if c == sm.REL_Y], "orbit should move")
+        self.assertTrue([v for c, v in rel if c == sm.REL_WHEEL_HI_RES], "zoom should scroll")
 
     def test_the_dominant_axis_group_wins(self):
         self.use(CAD_PROFILE)
@@ -134,11 +150,27 @@ class GroupSelectionTest(EngineFixture):
         self.assertEqual(self.engine.active_name, "pan")
 
     def test_resting_noise_never_starts_a_gesture(self):
+        # These are the values this puck actually reports with a hand off it,
+        # and rx=20 is above the deadzone. The engage gate is what stops it.
         self.use(CAD_PROFILE)
         self.tick(axes(x=4, y=-18, rx=20), count=30)
         self.assertEqual(self.engine.active_name, "")
         self.assertEqual(self.held(), [])
         self.assertEqual(key_events(self.device), [])
+
+    def test_a_deliberate_nudge_past_the_engage_gate_does_start_one(self):
+        self.use(CAD_PROFILE)
+        self.tick(axes(rx=26), count=3)
+        self.assertEqual(self.engine.active_name, "orbit")
+
+    def test_a_running_gesture_survives_down_to_the_deadzone(self):
+        # Hysteresis: engaging takes 24 counts, staying engaged takes 19.
+        self.use(CAD_PROFILE)
+        self.tick(axes(rx=300), count=3)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.tick(axes(rx=19), dt=0.01, count=20)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.assertEqual(self.held(), [sm.BTN_MIDDLE])
 
     def test_browser_profile_uses_plain_mouse_buttons(self):
         self.use(BROWSER_PROFILE)
@@ -153,8 +185,8 @@ class ReleaseTest(EngineFixture):
         self.use(CAD_PROFILE)
         self.tick(axes(rx=300), count=3)
         self.assertEqual(self.held(), [sm.BTN_MIDDLE])
-        # Centred, but only for 100 ms: under the 150 ms idle timeout.
-        self.tick(axes(), dt=0.05, count=2)
+        # Centred, but only for 50 ms: under the 80 ms idle timeout.
+        self.tick(axes(), dt=0.025, count=2)
         self.assertEqual(self.held(), [sm.BTN_MIDDLE])
         self.assertEqual(self.engine.active_name, "orbit")
 
