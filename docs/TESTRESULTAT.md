@@ -200,10 +200,14 @@ systemctl --user restart omarchy-spacemouse
 # (fokusera webbläsarfönstret, ta i pucken)
 ```
 
-Punkt 4 går också att göra utan att röra pucken, genom att spela upp
-inspelningen mot det fokuserade fönstret:
+Punkt 4 går också att göra utan att röra pucken. Öppna `tests/orbit_probe.html`
+(en sida utan beroenden som visar exakt vilka knappar, modifierare, pekardeltan
+och hjulsteg webbläsaren faktiskt tog emot, plus en kub som roterar, panorerar
+och zoomar), fokusera den och spela upp inspelningen mot det fokuserade
+fönstret:
 
 ```bash
+xdg-open tests/orbit_probe.html
 python3 daemon/spacemoused.py --no-focus --profile browser-threejs \
   --replay tests/fixtures/hardware/calibration_capture.bin --replay-speed 4
 ```
