@@ -13,11 +13,13 @@ window class.
 ```
   spacenavd  ──►  spacemoused  ──►  native   nothing is emitted, the app reads
   /run/spnav.sock      ▲                      spacenavd itself (KiCad, FreeCAD,
-                       │                      Blender, Fusion through Bifrost)
+                       │                      Blender)
   Hyprland  ───────────┘           ──►  off      the puck stays quiet here
   .socket2.sock                    ──►  mouse    a virtual uinput mouse and
   (focused window class)                         keyboard: drag gestures + wheel
-                                   ──►  keys     axes bound to keys, with repeat
+       ▲                           ──►  keys     axes bound to keys, with repeat
+       │
+  cursor parking, clutching, and the physical mice held aside mid-drag
 ```
 
 Everything is Python standard library. No build step, no virtualenv, no
@@ -128,15 +130,16 @@ To see a window's class: `hyprctl activewindow -j | jq -r .class`.
 | profile           | matches                                        | type   |
 |-------------------|------------------------------------------------|--------|
 | `cad-native`      | KiCad, FreeCAD, Blender                        | native |
-| `fusion-bifrost`  | `fusion360.exe`                                | native |
+| `fusion`          | `fusion360.exe`                                | mouse  |
 | `desktop-off`     | terminals (`org.omarchy.*` included), chat clients, Spotify, Obsidian | off |
 | `browser-threejs` | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
 | `default`         | everything else                                | mouse  |
 
-`fusion360.exe` is native because Fusion under Wine is driven by
-[Bifrost](https://github.com/EliasJernberg/bifrost), which speaks to spacenavd
-directly and hands the axes to the Fusion add-in. Two daemons emitting into the
-same window would fight.
+Fusion has its own profile because its mouse conventions are backwards from
+everyone else's: in Fusion the middle button **pans** and shift plus middle
+**orbits**, where every other viewer does it the other way round. Its FIT
+button is deliberately unbound, because no fit-to-view shortcut can be relied
+on under Wine; put one in `fit_key` if you bind one yourself.
 
 `desktop-off` is a safety rail rather than a rule: the `default` profile holds
 the **middle button** while orbiting, and in a terminal a middle click pastes
@@ -187,6 +190,74 @@ released.
 Every profile change, every `disable` and every shutdown releases whatever is
 held, immediately. A stuck middle button would make the desktop unusable, so
 that path is covered by its own tests.
+
+### What happens to the mouse pointer
+
+A synthetic drag has a problem a real mouse does not: it starts wherever the
+pointer happens to be, and a long drag walks into a screen edge and stops. Both
+are handled, and the handling is what makes the puck feel like a puck.
+
+- **Parking.** When a drag starts, the pointer is saved and moved to the middle
+  of the focused window, so there is room in every direction.
+- **Putting it back.** When the drag ends, the pointer goes back exactly where
+  it was. If `follow_mouse` handed the focus to whatever was under that spot,
+  the focus is taken back too.
+- **Clutching.** Once a drag has travelled `clutch_fraction` (0.35) of the
+  window, the button is lifted, the pointer is recentred and the button goes
+  back down, all inside one frame. The view does not stutter and the drag never
+  reaches an edge.
+- **Flat acceleration.** The virtual device is set to `accel_profile = flat`
+  through Hyprland at startup, so a given deflection always moves the same
+  distance.
+
+Switching between orbit and pan mid-drag is a change of button, not a new drag:
+nothing is warped, so the view does not jump.
+
+Turn the lot off with `"cursor_warp": false`, or `--no-cursor-warp` for one run.
+
+### The mouse and the puck at the same time
+
+Wayland has one pointer. A hand on the mouse and a hand on the puck both feed
+it, and the two get mixed into the same drag: the view comes out crooked.
+
+So for the length of a gesture, and only then, the physical mice are taken over
+with `EVIOCGRAB` and piped through the same virtual device the puck uses. Their
+motion is dropped while the puck owns the drag; their buttons and wheel go
+straight through. The moment the drag ends they are handed back, untouched,
+with their own acceleration profile and their own identity.
+
+```
+spacemouse-ctl pointer shared      hand the mice back and leave them alone
+spacemouse-ctl pointer proxied     take them over during gestures again
+```
+
+Four things stand between this and a dead mouse, which is the failure that
+would matter:
+
+1. the kernel drops a grab whenever the file descriptor closes, whatever
+   killed the daemon,
+2. a watchdog thread releases every grab if the main loop has not ticked for a
+   second,
+3. `spacemouse-ctl pointer shared` and the panel button hand them back at once,
+4. anything unexpected (no permission, no virtual device, a node that cannot be
+   opened) means nothing is grabbed at all and the daemon carries on.
+
+Which devices are eligible: udev has to call it `ID_INPUT_MOUSE`, and it must
+not be a touchpad, tablet, joystick or 3D mouse. The puck itself (`046d:c62b`)
+and this daemon's own virtual device are never candidates. `pointer_exclude_names`
+and `pointer_exclude_ids` take anything else out; `pointer_include` forces one
+back in.
+
+Reading a mouse's event node needs permission of its own:
+
+```bash
+echo 'SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", MODE="0660", GROUP="uucp"' \
+  | sudo tee /etc/udev/rules.d/99-omarchy-spacemouse-pointer.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=input
+```
+
+Without it the daemon says `pointer: shared (no permission)` once and works
+exactly as it did before.
 
 ### Axis names
 
@@ -283,31 +354,46 @@ Everything in `settings` applies to every profile:
 
 | key                  | default | what it does                                                     |
 |----------------------|---------|------------------------------------------------------------------|
-| `deadzone`           | 30      | counts ignored around centre. Raise it if the pointer drifts.     |
+| `deadzone`           | 18      | counts ignored around centre. A running gesture keeps going down to here. |
+| `engage_deadzone`    | 24      | counts needed to *start* a gesture. The gap to `deadzone` is the hysteresis. |
 | `full_scale`         | 350     | counts that count as full deflection.                             |
-| `curve`              | 1.5     | response exponent. Higher means gentler near centre.              |
+| `curve`              | 1.3     | response exponent. Higher means gentler near centre.              |
 | `sensitivity`        | 1.0     | overall multiplier.                                               |
 | `axis_gain`          | all 1.0 | per-axis multiplier.                                              |
 | `axis_invert`        | all false | per-axis direction flip.                                        |
 | `pointer_speed`      | 900     | pixels per second at full deflection.                             |
 | `wheel_speed`        | 3.0     | wheel detents per second at full deflection.                      |
 | `wheel_hi_res`       | true    | emit `REL_WHEEL_HI_RES` for smooth scrolling.                     |
-| `activate_threshold` | 0.12    | how hard you have to push to start a gesture.                     |
-| `release_threshold`  | 0.05    | below this the gesture stops moving.                              |
-| `idle_release_ms`    | 150     | how long it keeps the buttons after you let go.                   |
+| `smoothing_ms`       | 30      | exponential average on the axes. 0 turns it off.                  |
+| `idle_release_ms`    | 80      | how long it keeps the buttons after you let go.                   |
 | `dominance_ratio`    | 1.35    | how much stronger a competing group must be to take over.         |
-| `tick_hz`            | 60      | emit rate.                                                        |
+| `tick_hz`            | 120     | emit rate.                                                        |
+| `cursor_warp`        | true    | park the pointer in the window while dragging.                    |
+| `clutch_fraction`    | 0.35    | how far a drag travels before recentring.                         |
+| `flat_acceleration`  | true    | set the virtual device to flat acceleration at startup.           |
+| `pointer_mode`       | proxied | `shared` leaves the physical mice alone entirely.                 |
+| `pointer_grab`       | gesture | `always` holds the grab the whole time instead.                   |
+| `activate_threshold` | 0.0     | extra gate on the normalized magnitude. Normally left at zero.    |
+| `release_threshold`  | 0.0     | same, for keeping a gesture alive.                                |
 
-A practical order to tune in:
+**The two dials worth your time.** Everything else has a defensible default;
+these two are personal and nobody else can pick them for you:
+
+- **`pointer_speed`** (900): how fast a full deflection drags. Too slow feels
+  like wading, too fast feels nervous. Change it by 200 at a time.
+- **`curve`** (1.3): how much of the travel is spent being gentle. 1.0 is
+  linear and twitchy near centre, 1.8 is very soft and then sudden. Change it
+  by 0.2 at a time.
+
+Then, in this order, only if something is actually wrong:
 
 1. **Drift at rest**: watch `spacemoused.py --dump` with your hand off the puck.
-   Set `deadzone` just above the largest number you see.
-2. **Too fast or too slow**: `pointer_speed` for the drags, `wheel_speed` for
-   the zoom. Both are "per second at full deflection", so they are easy to
-   reason about.
-3. **Twitchy near centre**: raise `curve` to 1.8 or 2.0.
-4. **A gesture keeps flipping to another**: raise `dominance_ratio`.
-5. **The gesture drops out mid-move**: raise `idle_release_ms`.
+   Put `deadzone` just above the largest number you see, and `engage_deadzone`
+   about 6 counts above that.
+2. **Zoom too slow or too fast**: `wheel_speed`, in detents per second.
+3. **A gesture keeps flipping to another**: raise `dominance_ratio`.
+4. **The gesture drops out mid-move**: raise `idle_release_ms`.
+5. **It feels like it lags**: lower `smoothing_ms` to 15, or 0.
 6. **Wrong direction**: flip the `gain` sign on that axis in the gesture, or
    set `axis_invert` if you want it flipped everywhere.
 
@@ -320,9 +406,9 @@ profile name.
 
 - **left click** enable or disable
 - **middle click** back to following the focused window
-- **right click** the panel: window class, profile, gesture, spacenavd and
-  uinput health, the profile list with a manual override, and buttons for
-  enable/disable and reload
+- **right click** the panel: window class, profile, gesture, spacenavd, uinput
+  and pointer health, the profile list with a manual override, and buttons for
+  enable/disable, reload, and handing the physical mice back
 
 It reads `$XDG_RUNTIME_DIR/omarchy-spacemouse/status.json` and drives the
 daemon through `spacemouse-ctl`, so the widget and the command line are the
@@ -340,6 +426,8 @@ spacemouse-ctl enable | disable | toggle
 spacemouse-ctl profile <name>      pin a profile, ignoring focus
 spacemouse-ctl auto                back to following the focused window
 spacemouse-ctl reload              re-read profiles.json
+spacemouse-ctl pointer proxied     take the physical mice over during gestures
+spacemouse-ctl pointer shared      hand them straight back (escape hatch)
 ```
 
 It talks to `$XDG_RUNTIME_DIR/omarchy-spacemouse/control.sock`. With the daemon
@@ -383,6 +471,16 @@ None. With focus on no window at all, nothing is emitted. A window that sets
 no class of its own is a different case: it has a title, so it counts as a
 window and gets the fallback profile.
 
+**My mouse feels different / stopped working.**
+`spacemouse-ctl pointer shared` hands it back immediately, and so does
+stopping the service. `spacemouse-ctl status` shows the `pointer` line: it
+says `proxied (<name>)` when a mouse is being arbitrated and `shared (...)`
+with the reason when it is not.
+
+**The pointer jumps to the middle of the window when I use the puck.**
+That is the parking, and it is deliberate: it is what gives a drag room to run
+and what real 3D mouse drivers do. `"cursor_warp": false` turns it off.
+
 **Logs**: `journalctl --user -u omarchy-spacemouse -f`
 
 ---
@@ -390,7 +488,7 @@ window and gets the fallback profile.
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 129 tests, standard library only
+python3 tests/run.py            # 207 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```
@@ -413,6 +511,15 @@ python3 daemon/spacemoused.py --dry-run --no-focus --profile default \
 `tests/fixtures/hardware/calibration_capture.bin` is a real recording from a
 SpaceMouse Pro: 2004 frames of axis sweeps followed by three presses of the FIT
 button, with the decoded values in the `.txt` next to it.
+
+`tests/live_gesture.py` is the big one: it creates the device, plays the
+recorded capture through the real engine, reads every event back out of
+`/dev/input/eventN`, and checks that what came back is what went in, that the
+pointer was parked and put back, and that a long drag clutched.
+
+```bash
+python3 tests/live_gesture.py --window      # opens its own window to drag in
+```
 
 Once `/dev/uinput` is writable, one command checks the whole kernel path:
 it creates the device, finds the `/dev/input/eventN` the kernel gave it, plays
