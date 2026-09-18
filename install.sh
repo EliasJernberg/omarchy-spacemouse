@@ -18,6 +18,23 @@ BIN_DIR="$HOME/.local/bin"
 PLUGIN_ID="jernberg.spacemouse"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 UDEV_RULE="/etc/udev/rules.d/99-omarchy-spacemouse-uinput.rules"
+POINTER_RULE="/etc/udev/rules.d/99-omarchy-spacemouse-pointer.rules"
+
+# Is at least one physical mouse readable? That is what the pointer
+# arbitration needs, and it is a different permission from /dev/uinput.
+pointer_readable() {
+  local node minor properties
+  for node in /sys/class/input/event*; do
+    [[ -e $node/dev ]] || continue
+    minor="${node##*/}"
+    minor=$(cut -d: -f2 "$node/dev")
+    properties="/run/udev/data/c13:$minor"
+    grep -q "^E:ID_INPUT_MOUSE=1" "$properties" 2>/dev/null || continue
+    grep -q "^E:ID_INPUT_3D_MOUSE=1" "$properties" 2>/dev/null && continue
+    [[ -r "/dev/input/${node##*/}" ]] && return 0
+  done
+  return 1
+}
 
 WITH_PLUGIN=1
 START=1
@@ -138,6 +155,21 @@ if [[ ! -w /dev/uinput ]]; then
     echo 'SUBSYSTEM=="input", ATTRS{name}=="Omarchy SpaceMouse", MODE="0660", GROUP="uucp"' | sudo tee -a $UDEV_RULE
     sudo udevadm control --reload-rules
 RULE
+fi
+
+if ! pointer_readable; then
+  step "Optional: let the puck hold the mouse aside mid-drag"
+  cat <<POINTER
+  A hand on the mouse and a hand on the puck both feed the one Wayland pointer,
+  which makes a drag come out crooked. The daemon can take the mice over for
+  the length of a gesture, but only if it can open their event nodes:
+
+    echo 'SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", MODE="0660", GROUP="uucp"' | sudo tee $POINTER_RULE
+    sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=input
+
+  Without it the status line says "pointer: shared (no permission)" and
+  everything else works exactly as before.
+POINTER
 fi
 
 step "Done"
