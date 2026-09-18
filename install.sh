@@ -126,6 +126,10 @@ if [[ ! -w /dev/uinput ]]; then
     sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uinput
     sudo usermod -aG uucp "$USER"     # only if 'id -nG' does not list uucp already
 
+  If 'id -nG' already lists uucp, the udevadm line is the whole job: the
+  running daemon retries every ten seconds and picks the device up by itself,
+  with no logout and no restart.
+
   Until then the daemon runs, follows focus and keeps the native profiles
   working; only the emulated profiles stay idle.
 

@@ -63,6 +63,11 @@ Ubuntu the same rule is usually written with `GROUP="input"`. Until the rule is
 in place the daemon still runs, still follows focus and still keeps the native
 applications working, and `spacemouse-ctl status` reports `uinput denied`.
 
+**If `id -nG` already lists `uucp`, that is the whole job**: no logout, no
+restart. The daemon retries every ten seconds, so it picks the device up on its
+own within ten seconds of `udevadm trigger`. The logout is only needed when the
+`usermod` line above actually had to add you to the group.
+
 Writing to `/dev/uinput` is all the daemon needs. Reading the device back is a
 separate permission, and only `tests/live_check.py` wants it, because event
 nodes are `root:input` and a desktop user is usually in neither group. Add this

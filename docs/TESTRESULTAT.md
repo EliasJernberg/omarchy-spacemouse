@@ -189,8 +189,12 @@ echo 'SUBSYSTEM=="input", ATTRS{name}=="Omarchy SpaceMouse", MODE="0660", GROUP=
   | sudo tee -a /etc/udev/rules.d/99-omarchy-spacemouse-uinput.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uinput
 
-# 2. logga ut och in (gruppmedlemskapet tas vid inloggning), kontrollera:
+# 2. kontrollera. voysys ligger redan i uucp (id -nG), och den körande
+#    daemonprocessen har gid 984 bland sina supplementary groups, så ingen
+#    utloggning och ingen omstart behövs: daemonen försöker igen var tionde
+#    sekund och tar enheten av sig själv.
 ls -l /dev/uinput          # ska vara crw-rw---- root uucp
+spacemouse-ctl status      # uinput ska gå från denied till ready
 
 # 3. självtestet: skapar enheten, spelar inspelningen, läser tillbaka
 python3 tests/live_check.py
