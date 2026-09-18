@@ -128,6 +128,11 @@ if [[ ! -w /dev/uinput ]]; then
 
   Until then the daemon runs, follows focus and keeps the native profiles
   working; only the emulated profiles stay idle.
+
+  Optional, and only for tests/live_check.py, which reads the device back:
+
+    echo 'SUBSYSTEM=="input", ATTRS{name}=="Omarchy SpaceMouse", MODE="0660", GROUP="uucp"' | sudo tee -a $UDEV_RULE
+    sudo udevadm control --reload-rules
 RULE
 fi
 

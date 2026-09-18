@@ -63,6 +63,17 @@ Ubuntu the same rule is usually written with `GROUP="input"`. Until the rule is
 in place the daemon still runs, still follows focus and still keeps the native
 applications working, and `spacemouse-ctl status` reports `uinput denied`.
 
+Writing to `/dev/uinput` is all the daemon needs. Reading the device back is a
+separate permission, and only `tests/live_check.py` wants it, because event
+nodes are `root:input` and a desktop user is usually in neither group. Add this
+second line if you want to run that self-test:
+
+```bash
+echo 'SUBSYSTEM=="input", ATTRS{name}=="Omarchy SpaceMouse", MODE="0660", GROUP="uucp"' \
+  | sudo tee -a /etc/udev/rules.d/99-omarchy-spacemouse-uinput.rules
+sudo udevadm control --reload-rules
+```
+
 ### Requirements
 
 - `spacenavd` running (`omarchy pkg add spacenavd && sudo systemctl enable --now spacenavd`)
@@ -396,7 +407,20 @@ python3 daemon/spacemoused.py --dry-run --no-focus --profile default \
 SpaceMouse Pro: 2004 frames of axis sweeps followed by three presses of the FIT
 button, with the decoded values in the `.txt` next to it.
 
-To watch the real device the daemon creates:
+Once `/dev/uinput` is writable, one command checks the whole kernel path:
+it creates the device, finds the `/dev/input/eventN` the kernel gave it, plays
+the recorded capture through the real gesture engine, and checks that what
+comes back out is what went in.
+
+```bash
+python3 tests/live_check.py
+```
+
+It is not part of `tests/run.py`, because it is the only thing here that
+touches the kernel. Without the second udev rule above it still creates the
+device and emits, and reports the readback as skipped rather than failed.
+
+To watch the device by hand instead:
 
 ```bash
 ls /sys/class/input/*/name | while read -r f; do

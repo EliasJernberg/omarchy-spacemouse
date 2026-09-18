@@ -53,6 +53,9 @@ import time
 APP_NAME = "omarchy-spacemouse"
 VERSION = "1.0.0"
 DEVICE_NAME = "Omarchy SpaceMouse"
+# How long to wait for Hyprland to name the focused window before falling back
+# to the profile list's own fallback.
+FOCUS_GRACE_SECONDS = 3.0
 
 # ---------------------------------------------------------------------------
 # spacenavd protocol
@@ -1543,6 +1546,8 @@ class SpaceMouseDaemon(object):
 
         self.enabled = True
         self.manual_profile = None  # name of a manual override
+        self.started_at = time.monotonic()
+        self.focus_known = False
         self.window_class = ""
         self.window_title = ""
         self.current_profile = OFF_PROFILE
@@ -1627,8 +1632,9 @@ class SpaceMouseDaemon(object):
 
     # -- profile selection -------------------------------------------------
 
-    def desired_profile(self):
-        if not self.enabled:
+    def select_for(self, window_class):
+        """The profile a given window class should get right now."""
+        if not self.enabled or not self.focus_is_known():
             return OFF_PROFILE
         if self.manual_profile:
             profile = self.profile_set.by_name(self.manual_profile)
@@ -1638,9 +1644,26 @@ class SpaceMouseDaemon(object):
                 "manual profile '%s' is gone, back to automatic" % self.manual_profile
             )
             self.manual_profile = None
-        return self.profile_set.select(self.window_class)
+        return self.profile_set.select(window_class)
+
+    def desired_profile(self):
+        return self.select_for(self.window_class)
+
+    def focus_is_known(self):
+        """Whether the focused window has been read yet.
+
+        Until it has, no profile is applied: starting on the fallback profile
+        for a moment would arm the emulated gestures against whatever window
+        happens to be in front. If Hyprland never answers (it is not running,
+        or the socket is gone), the grace period expires and the fallback
+        applies after all, which is what a session without a compositor wants.
+        """
+        if self.args.no_focus or self.focus_known:
+            return True
+        return (time.monotonic() - self.started_at) > FOCUS_GRACE_SECONDS
 
     def on_focus(self, window_class, title):
+        self.focus_known = True
         if window_class == self.window_class and title == self.window_title:
             return
         self.window_class = window_class
@@ -1655,7 +1678,11 @@ class SpaceMouseDaemon(object):
         engine lock: a profile change that overlaps a tick must not interleave
         with the tick's own key bookkeeping.
         """
-        profile = profile or self.desired_profile()
+        # Snapshot the class first: the focus watcher runs in its own thread,
+        # and a class read after the decision would make the log line describe
+        # a window the profile was not chosen for.
+        window_class = self.window_class
+        profile = profile or self.select_for(window_class)
         with self.engine_lock:
             if profile is self.current_profile:
                 return profile
@@ -1664,7 +1691,7 @@ class SpaceMouseDaemon(object):
         self.status_dirty = True
         self.log(
             "profile -> %s (%s) for class %r"
-            % (profile.name, profile.type, self.window_class)
+            % (profile.name, profile.type, window_class)
         )
         return profile
 

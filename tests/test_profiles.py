@@ -323,3 +323,45 @@ class NormalizeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FocusGraceTest(unittest.TestCase):
+    """Nothing is armed until the focused window has actually been read."""
+
+    def daemon(self, *extra):
+        args = sm.build_parser().parse_args(
+            ["--config", "/nonexistent/profiles.json", "--defaults", DEFAULT_PROFILES] + list(extra))
+        return sm.SpaceMouseDaemon(args)
+
+    def test_no_profile_is_applied_before_focus_is_known(self):
+        daemon = self.daemon()
+        self.assertFalse(daemon.focus_is_known())
+        self.assertIs(daemon.select_for("kicad"), sm.OFF_PROFILE)
+        self.assertIs(daemon.select_for("Opera"), sm.OFF_PROFILE)
+
+    def test_the_first_focus_reading_arms_it(self):
+        daemon = self.daemon()
+        daemon.on_focus("kicad", "KiCad")
+        self.assertTrue(daemon.focus_is_known())
+        self.assertEqual(daemon.select_for("kicad").type, "native")
+
+    def test_an_empty_class_still_counts_as_a_reading(self):
+        daemon = self.daemon()
+        daemon.on_focus("", "")
+        self.assertTrue(daemon.focus_is_known())
+
+    def test_the_grace_period_falls_back_when_hyprland_never_answers(self):
+        daemon = self.daemon()
+        daemon.started_at -= sm.FOCUS_GRACE_SECONDS + 1
+        self.assertTrue(daemon.focus_is_known())
+        self.assertEqual(daemon.select_for("whatever").name, "default")
+
+    def test_no_focus_mode_is_armed_immediately(self):
+        daemon = self.daemon("--no-focus")
+        self.assertTrue(daemon.focus_is_known())
+        self.assertEqual(daemon.select_for("Opera").name, "browser-threejs")
+
+    def test_disabled_beats_everything(self):
+        daemon = self.daemon("--no-focus")
+        daemon.enabled = False
+        self.assertIs(daemon.select_for("Opera"), sm.OFF_PROFILE)
