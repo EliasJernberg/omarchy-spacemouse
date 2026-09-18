@@ -285,7 +285,7 @@ Panel {
             visible: root.uinputBlocked
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
-            text: "No access to /dev/uinput. Add the udev rule from the README and log back in."
+            text: "No access to /dev/uinput. Add the udev rule from the README; the daemon picks it up within ten seconds."
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
