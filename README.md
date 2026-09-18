@@ -124,7 +124,7 @@ To see a window's class: `hyprctl activewindow -j | jq -r .class`.
 |-------------------|------------------------------------------------|--------|
 | `cad-native`      | KiCad, FreeCAD, Blender                        | native |
 | `fusion-bifrost`  | `fusion360.exe`                                | native |
-| `desktop-off`     | terminals, chat clients, Spotify, Obsidian     | off    |
+| `desktop-off`     | terminals (`org.omarchy.*` included), chat clients, Spotify, Obsidian | off |
 | `browser-threejs` | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
 | `default`         | everything else                                | mouse  |
 

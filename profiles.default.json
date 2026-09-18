@@ -32,8 +32,8 @@
     },
     {
       "name": "desktop-off",
-      "description": "Terminals, chat and media players. Emitting a middle-button drag here would paste the primary selection, so the puck is simply idle.",
-      "match": "^(foot|footclient|Alacritty|kitty|com\\.mitchellh\\.ghostty|org\\.wezfurlong\\.wezterm|org\\.gnome\\.(Console|Nautilus)|Slack|discord|vesktop|Spotify|thunderbird|obsidian)$",
+      "description": "Terminals (including every org.omarchy.* TUI window), chat and media players. Emitting a middle-button drag here would paste the primary selection, so the puck is simply idle.",
+      "match": "^(foot|footclient|Alacritty|alacritty|kitty|com\\.mitchellh\\.ghostty|org\\.wezfurlong\\.wezterm|org\\.gnome\\.(Console|Nautilus)|Slack|discord|vesktop|Spotify|thunderbird|obsidian)$|^org\\.omarchy\\.",
       "type": "off"
     },
     {

@@ -85,6 +85,13 @@ class ShippedDefaultsTest(unittest.TestCase):
         for window_class in ("foot", "Alacritty", "kitty", "Spotify"):
             self.assertEqual(self.select(window_class).type, "off", window_class)
 
+    def test_the_omarchy_tui_windows_are_off_too(self):
+        # Omarchy launches its TUIs as org.omarchy.<name>, so the whole prefix
+        # has to be covered, not just the terminal emulators by name.
+        for window_class in ("org.omarchy.terminal", "org.omarchy.about",
+                             "org.omarchy.btop", "org.omarchy.screensaver"):
+            self.assertEqual(self.select(window_class).type, "off", window_class)
+
     def test_matching_is_case_insensitive(self):
         self.assertEqual(self.select("KiCad").type, "native")
         self.assertEqual(self.select("OPERA").name, "browser-threejs")
