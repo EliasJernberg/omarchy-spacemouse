@@ -1,0 +1,16 @@
+[Unit]
+Description=Omarchy SpaceMouse daemon (per-application 3Dconnexion profiles)
+Documentation=https://github.com/EliasJernberg/omarchy-spacemouse
+After=graphical-session.target spacenavd.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @DAEMON@
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target
