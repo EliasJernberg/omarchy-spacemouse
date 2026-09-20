@@ -635,7 +635,7 @@ the tally line names (`area from window` or `area from monitor`).
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 235 tests, standard library only
+python3 tests/run.py            # 238 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```

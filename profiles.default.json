@@ -134,15 +134,12 @@
     },
     {
       "name": "bambu-mouse-fallback",
-      "description": "Mouse emulation for the slicers when hidraw stays out of reach, in their own convention: left drag rotates, right drag pans, the wheel zooms. Never matches a window by itself: pin it with `spacemouse-ctl profile bambu-mouse-fallback`. The pointer is never moved, because a left drag that starts on a model drags the model instead of the camera: park the pointer on empty plate before you take hold of the puck.",
+      "description": "Mouse emulation for the slicers when hidraw stays out of reach, in their own convention: left drag rotates, right drag pans, the wheel zooms. Never matches a window by itself: pin it with `spacemouse-ctl profile bambu-mouse-fallback`. The pointer is never moved, because a left drag that starts on a model drags the model instead of the camera: park the pointer on empty plate before you take hold of the puck. Unlike Fusion these viewers orbit around the camera target rather than the point under the pointer, so the global timings stand and orbit and pan swap as fast as anywhere else.",
       "match": "^__never__bambu-mouse-fallback$",
       "type": "mouse",
       "cursor": "keep",
       "clutch": "off",
       "edge_guard": "off",
-      "idle_release_ms": 350,
-      "switch_hold_ms": 250,
-      "dominance_ratio": 2.0,
       "fit_key": "KEY_Z",
       "fit_comment": "Z zooms to the selected object, or to everything when nothing is selected. Change it if your build binds that elsewhere.",
       "gestures": {
