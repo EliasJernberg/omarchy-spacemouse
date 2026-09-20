@@ -1,0 +1,31 @@
+# Let the desktop user read the SpaceMouse through hidraw.
+#
+# spacenavd owns the evdev node and hands motion to its clients over
+# /run/spnav.sock, which is what this plugin and every libspnav application
+# use. The slicers do not: Bambu Studio, Orca Slicer and PrusaSlicer carry
+# their own Mouse3DController on top of hidapi and open /dev/hidraw* directly.
+# That node is root-only out of the box, so they find the puck and then fail
+# with "3DConnexion device cannot be opened".
+#
+# The two grants do different jobs:
+#   GROUP/MODE  covers ordinary applications, for members of the group.
+#   TAG+=uaccess covers the Flatpak builds. A Flatpak sandbox keeps your uid
+#               but drops every supplementary group, so a group grant never
+#               reaches it; the uaccess ACL is written for the uid and does.
+#
+# The file has to sort before 73-seat-late.rules, where systemd turns the
+# uaccess tag into the ACL, so keep the 70- prefix.
+#
+# Nothing here takes the device away from spacenavd: it grabs the evdev node,
+# hidraw is a separate path out of the same kernel HID device, and both readers
+# see every report.
+#
+# Install:
+#   sudo install -m 644 udev/70-omarchy-spacemouse-hidraw.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw
+
+# 3Dconnexion's own vendor id.
+KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# The Logitech-era devices, the same product list spacenavd carries.
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c603|c605|c606|c621|c623|c625|c626|c627|c628|c629|c62b|c62e|c62f|c631|c632|c633|c635|c636|c640|c652", MODE="0660", GROUP="plugdev", TAG+="uaccess"

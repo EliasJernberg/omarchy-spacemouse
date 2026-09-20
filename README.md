@@ -81,6 +81,11 @@ echo 'SUBSYSTEM=="input", ATTRS{name}=="Omarchy SpaceMouse", MODE="0660", GROUP=
 sudo udevadm control --reload-rules
 ```
 
+Bambu Studio, Orca Slicer and PrusaSlicer need a third rule, for a different
+device and a different reason: they bypass spacenavd and read `/dev/hidraw*`
+themselves. See [the slicers](#the-slicers-read-the-puck-themselves-once-they-are-allowed-to)
+below. `install.sh` prints the line when it sees a puck it cannot read.
+
 ### Requirements
 
 - `spacenavd` running (`omarchy pkg add spacenavd && sudo systemctl enable --now spacenavd`)
@@ -127,13 +132,15 @@ To see a window's class: `hyprctl activewindow -j | jq -r .class`.
 
 ### What ships by default
 
-| profile           | matches                                        | type   |
-|-------------------|------------------------------------------------|--------|
-| `cad-native`      | KiCad, FreeCAD, Blender                        | native |
-| `fusion`          | `fusion360.exe`                                | mouse  |
-| `desktop-off`     | terminals (`org.omarchy.*` included), chat clients, Spotify, Obsidian | off |
-| `browser-threejs` | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
-| `default`         | everything else                                | mouse  |
+| profile                | matches                                        | type   |
+|------------------------|------------------------------------------------|--------|
+| `cad-native`           | KiCad, FreeCAD, Blender                        | native |
+| `fusion`               | `fusion360.exe`                                | mouse  |
+| `bambu`                | Bambu Studio, Orca Slicer, PrusaSlicer         | native |
+| `bambu-mouse-fallback` | nothing; pin it by name                        | mouse  |
+| `desktop-off`          | terminals (`org.omarchy.*` included), chat clients, Spotify, Obsidian | off |
+| `browser-threejs`      | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
+| `default`              | everything else                                | mouse  |
 
 Fusion has its own profile for two reasons.
 
@@ -172,6 +179,53 @@ the orbit button is a fresh pivot choice, so the profile is deliberately slow
 to let go and slow to change its mind: a short pause mid-orbit keeps the
 button down, and a brief wobble toward pan does not swap the button out and
 back.
+
+### The slicers read the puck themselves, once they are allowed to
+
+`bambu` is a `native` profile, but for a different reason than `cad-native`.
+Bambu Studio, Orca Slicer and PrusaSlicer are one family, and all three carry
+their own `Mouse3DController` built on hidapi. They never talk to spacenavd:
+they enumerate `/dev/hidraw*`, look for 3Dconnexion's vendor ids and open the
+node directly. When they can, they give you real six-axis navigation with their
+own pivot and their own sensitivity dialog, which beats anything an emulated
+drag can do. So the daemon stays quiet and lets them have it.
+
+Out of the box they cannot. `/dev/hidraw*` is `0600 root:root`, so the slicer
+finds the puck, fails to open it and logs *"3DConnexion device cannot be
+opened"*. One rule fixes that:
+
+```bash
+sudo install -m 644 udev/70-omarchy-spacemouse-hidraw.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw
+```
+
+The rule grants twice over, and both halves earn their place. `GROUP="plugdev"`
+covers ordinary applications. `TAG+="uaccess"` covers the Flatpak builds, which
+is how most people install Bambu Studio: **a Flatpak sandbox keeps your uid but
+drops every supplementary group**, so a group grant alone never reaches inside
+it, while the uaccess ACL is written for the uid and does. Check it from inside
+the sandbox with `flatpak run --command=id com.bambulab.BambuStudio`. The
+filename has to sort before `73-seat-late.rules`, where systemd turns the
+uaccess tag into that ACL, so keep the `70-` prefix.
+
+spacenavd is not in the way here and does not need to be stopped. It grabs the
+**evdev** node; hidraw is a separate path out of the same kernel HID device, and
+both readers see every report. That also means the daemon would otherwise drive
+the pointer while the slicer drove its own camera, which is exactly the double
+control the `native` type exists to avoid.
+
+Until the rule is installed the puck does nothing in a slicer. Mouse emulation
+is there under a name instead of a pattern:
+
+```bash
+spacemouse-ctl profile bambu-mouse-fallback   # pin it
+spacemouse-ctl auto                           # back to following focus
+```
+
+It follows the slicers' own convention (left drag rotates, right drag pans, the
+wheel zooms) and never moves the pointer, because a left drag that starts on a
+model drags the model instead of the camera. Park the pointer on empty plate
+before you take hold of the puck.
 
 `desktop-off` is a safety rail rather than a rule: the `default` profile holds
 the **middle button** while orbiting, and in a terminal a middle click pastes

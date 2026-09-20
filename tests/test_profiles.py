@@ -102,6 +102,42 @@ class ShippedDefaultsTest(unittest.TestCase):
         self.assertEqual(profile.fit_key, [])
         self.assertIn(5, profile.buttons)
 
+    def test_the_slicers_are_left_alone(self):
+        # Bambu Studio, Orca and PrusaSlicer open /dev/hidraw themselves, so
+        # emulating a drag on top of that would be two hands on the camera.
+        for window_class in (
+            "BambuStudio",
+            "bambu-studio",
+            "OrcaSlicer",
+            "PrusaSlicer",
+            "prusa-slicer",
+        ):
+            profile = self.select(window_class)
+            self.assertEqual(profile.name, "bambu", window_class)
+            self.assertEqual(profile.type, "native", window_class)
+
+    def test_the_slicer_fallback_is_pinned_by_name_only(self):
+        # It exists for the machines where the hidraw rule is not installed,
+        # and it must never claim a window on its own.
+        profile = self.profiles.by_name("bambu-mouse-fallback")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.type, "mouse")
+        for window_class in ("BambuStudio", "bambu-mouse-fallback", "__never__"):
+            self.assertNotEqual(self.select(window_class).name, profile.name)
+
+    def test_the_slicer_fallback_follows_the_slicer_convention(self):
+        # Left drag rotates and right drag pans, which is the opposite of the
+        # CAD default, and the pointer stays put: a left drag that starts on a
+        # model would drag the model instead of the camera.
+        profile = self.profiles.by_name("bambu-mouse-fallback")
+        gestures = dict((g.name, g) for g in profile.gestures)
+        self.assertEqual(gestures["orbit"].hold, [sm.BTN_LEFT])
+        self.assertEqual(gestures["pan"].hold, [sm.BTN_RIGHT])
+        self.assertEqual(gestures["zoom"].axes["y"][0], "wheel")
+        self.assertEqual(profile.cursor_mode, "keep")
+        self.assertEqual(profile.clutch_mode, "off")
+        self.assertFalse(profile.edge_guard)
+
     def test_browsers_use_the_threejs_convention(self):
         for window_class in (
             "Opera",

@@ -127,6 +127,79 @@
       }
     },
     {
+      "name": "bambu",
+      "description": "Bambu Studio, Orca Slicer and PrusaSlicer read the puck themselves through /dev/hidraw (their own Mouse3DController, built on hidapi), so the daemon stays quiet and lets them have it. That needs read access to the hidraw node, which is root-only until udev/70-omarchy-spacemouse-hidraw.rules is installed. Until it is, the puck does nothing here, and `spacemouse-ctl profile bambu-mouse-fallback` gives you mouse emulation instead.",
+      "match": "^(BambuStudio|bambu-studio|OrcaSlicer|orca-slicer|PrusaSlicer|prusa-slicer|PrusaGcodeviewer)",
+      "type": "native"
+    },
+    {
+      "name": "bambu-mouse-fallback",
+      "description": "Mouse emulation for the slicers when hidraw stays out of reach, in their own convention: left drag rotates, right drag pans, the wheel zooms. Never matches a window by itself: pin it with `spacemouse-ctl profile bambu-mouse-fallback`. The pointer is never moved, because a left drag that starts on a model drags the model instead of the camera: park the pointer on empty plate before you take hold of the puck.",
+      "match": "^__never__bambu-mouse-fallback$",
+      "type": "mouse",
+      "cursor": "keep",
+      "clutch": "off",
+      "edge_guard": "off",
+      "idle_release_ms": 350,
+      "switch_hold_ms": 250,
+      "dominance_ratio": 2.0,
+      "fit_key": "KEY_Z",
+      "fit_comment": "Z zooms to the selected object, or to everything when nothing is selected. Change it if your build binds that elsewhere.",
+      "gestures": {
+        "orbit": {
+          "enabled": true,
+          "hold": [
+            "left"
+          ],
+          "speed": 1.0,
+          "axes": {
+            "rx": {
+              "to": "dy",
+              "gain": 1.0
+            },
+            "ry": {
+              "to": "dx",
+              "gain": -1.0
+            }
+          }
+        },
+        "pan": {
+          "enabled": true,
+          "hold": [
+            "right"
+          ],
+          "speed": 1.0,
+          "axes": {
+            "x": {
+              "to": "dx",
+              "gain": 1.0
+            },
+            "z": {
+              "to": "dy",
+              "gain": -1.0
+            }
+          }
+        },
+        "zoom": {
+          "enabled": true,
+          "mode": "wheel",
+          "speed": 1.0,
+          "axes": {
+            "y": {
+              "to": "wheel",
+              "gain": 1.0
+            }
+          }
+        }
+      },
+      "buttons": {
+        "5": {
+          "action": "fit",
+          "label": "Fit view"
+        }
+      }
+    },
+    {
       "name": "desktop-off",
       "description": "Terminals (including every org.omarchy.* TUI window), chat and media players. Emitting a middle-button drag here would paste the primary selection, so the puck is simply idle.",
       "match": "^(foot|footclient|Alacritty|alacritty|kitty|com\\.mitchellh\\.ghostty|org\\.wezfurlong\\.wezterm|org\\.gnome\\.(Console|Nautilus)|Slack|discord|vesktop|Spotify|thunderbird|obsidian)$|^org\\.omarchy\\.",

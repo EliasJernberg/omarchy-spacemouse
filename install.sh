@@ -19,6 +19,7 @@ PLUGIN_ID="jernberg.spacemouse"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 UDEV_RULE="/etc/udev/rules.d/99-omarchy-spacemouse-uinput.rules"
 POINTER_RULE="/etc/udev/rules.d/99-omarchy-spacemouse-pointer.rules"
+HIDRAW_RULE_SRC="udev/70-omarchy-spacemouse-hidraw.rules"
 
 # Is at least one physical mouse readable? That is what the pointer
 # arbitration needs, and it is a different permission from /dev/uinput.
@@ -34,6 +35,20 @@ pointer_readable() {
     [[ -r "/dev/input/${node##*/}" ]] && return 0
   done
   return 1
+}
+
+# The slicers (Bambu Studio, Orca, PrusaSlicer) skip spacenavd and open the
+# hidraw node themselves. 0 = readable, 1 = there but root-only, 2 = no puck.
+hidraw_state() {
+  local node found=2
+  for node in /sys/class/hidraw/hidraw*; do
+    [[ -e $node/device/uevent ]] || continue
+    grep -qiE '^HID_NAME=.*(3dconnexion|space ?(mouse|navigator|pilot|explorer|traveller|ball))' \
+      "$node/device/uevent" || continue
+    [[ -r "/dev/${node##*/}" ]] && return 0
+    found=1
+  done
+  return $found
 }
 
 WITH_PLUGIN=1
@@ -170,6 +185,31 @@ if ! pointer_readable; then
   Without it the status line says "pointer: shared (no permission)" and
   everything else works exactly as before.
 POINTER
+fi
+
+hidraw_status=0
+hidraw_state || hidraw_status=$?
+if ((hidraw_status == 1)); then
+  step "Optional: let the slicers read the puck themselves"
+  cat <<HIDRAW
+  Bambu Studio, Orca Slicer and PrusaSlicer never talk to spacenavd. They open
+  /dev/hidraw* directly, and that node is root-only, so they find the puck and
+  then say "3DConnexion device cannot be opened". One rule fixes it:
+
+    sudo install -m 644 $REPO/$HIDRAW_RULE_SRC /etc/udev/rules.d/
+    sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw
+
+  The uaccess tag in that rule is the part the Flatpak builds need: a sandbox
+  keeps your uid but drops your supplementary groups, so a group grant alone
+  never reaches them. spacenavd is unaffected either way, it grabs the evdev
+  node and hidraw is a separate path out of the same device.
+
+  The shipped 'bambu' profile is native for that reason: the daemon stays out
+  of the way and lets the slicer have the puck. Until the rule is in place,
+  pin the emulation instead:
+
+    spacemouse-ctl profile bambu-mouse-fallback
+HIDRAW
 fi
 
 step "Done"
