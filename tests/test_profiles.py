@@ -48,18 +48,36 @@ class ShippedDefaultsTest(unittest.TestCase):
                 "%s should be left to spacenavd, got %s" % (window_class, profile.name),
             )
 
-    def test_fusion_gets_fusions_own_mouse_conventions(self):
-        # Fusion under Wine: middle drag pans, shift plus middle orbits.
-        # Backwards from the CAD default, which is why it has its own profile.
+    def test_fusion_follows_the_solidworks_preset(self):
+        # Measured in the running Fusion with that preset selected: the middle
+        # button orbits, ctrl plus middle pans, shift plus middle is a
+        # continuous drag zoom. The profile assumes that preset, and says so
+        # in its description, because on Fusion's own default the middle
+        # button pans and none of this lines up.
         profile = self.select("fusion360.exe")
         self.assertEqual(profile.name, "fusion")
         self.assertEqual(profile.type, "mouse")
         gestures = dict((g.name, g) for g in profile.gestures)
-        self.assertEqual(gestures["pan"].hold, [sm.BTN_MIDDLE])
+        self.assertEqual(gestures["orbit"].hold, [sm.BTN_MIDDLE])
         self.assertEqual(
-            gestures["orbit"].hold, [sm.KEY_NAMES["KEY_LEFTSHIFT"], sm.BTN_MIDDLE]
+            gestures["pan"].hold, [sm.KEY_NAMES["KEY_LEFTCTRL"], sm.BTN_MIDDLE]
         )
-        self.assertEqual(gestures["zoom"].mode, "wheel")
+        self.assertEqual(
+            gestures["zoom"].hold, [sm.KEY_NAMES["KEY_LEFTSHIFT"], sm.BTN_MIDDLE]
+        )
+        self.assertIn("SOLIDWORKS", profile.description)
+
+    def test_fusion_zooms_by_dragging_and_not_by_the_wheel(self):
+        # Two reasons. Xwayland hands an application whole wheel clicks and
+        # nothing between them, so wheel zoom was a staircase; and the drag
+        # zoom lives on the same puck axis as the wheel did, so keeping both
+        # would drive the zoom twice from one axis. Nothing in this profile is
+        # a wheel group any more.
+        profile = self.select("fusion360.exe")
+        self.assertEqual(profile.wheel_gestures, [])
+        gestures = dict((g.name, g) for g in profile.gestures)
+        self.assertEqual(gestures["zoom"].mode, "drag")
+        self.assertEqual(gestures["zoom"].axes["y"][0], "dy")
 
     def test_fusion_never_moves_the_pointer(self):
         # Fusion reads the pointer to pick its orbit pivot, so warping it
@@ -89,35 +107,13 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertEqual(browser["orbit"].axes["ry"], ("dx", -1.0))
 
-    def test_fusion_lifts_the_gentle_half_of_the_zoom_travel(self):
-        # A wheel cannot move by a fraction of a click, so under the global
-        # curve the gentle half of the puck's travel bought roughly two clicks
-        # a second in Fusion and felt dead. Straight is the shape that gives
-        # it a usable rhythm without making full deflection any faster.
-        profile = self.select("fusion360.exe")
-        self.assertEqual(profile.number("wheel_curve", self.profiles.settings), 1.0)
-        other = self.profiles.by_name("browser-threejs")
-        self.assertEqual(
-            other.number("wheel_curve", self.profiles.settings, 1.3),
-            float(self.profiles.settings["curve"]),
-            "a browser consumes every unit, so it keeps the global curve",
-        )
-
-    def test_fusion_zooms_the_way_the_puck_is_pushed(self):
-        # Direction is the hand's call, and the hand said the first one was
-        # backwards: lifting the puck now zooms in.
+    def test_lifting_the_puck_zooms_in(self):
+        # Measured in Fusion: with shift held, dragging the pointer down zooms
+        # in and dragging it up zooms out. Lifting the puck is +y, so +y has
+        # to become a downward drag, which is a positive gain on dy.
         zoom = dict((g.name, g) for g in self.select("fusion360.exe").gestures)["zoom"]
-        self.assertEqual(zoom.axes["y"], ("wheel", -1.0))
-
-    def test_fusion_zooms_in_whole_clicks_a_wine_app_can_see(self):
-        # Everything on Xwayland acts on whole wheel clicks, and a click is
-        # 120 high resolution units. At the global wheel_speed a comfortable
-        # half-second push never reaches one, so Fusion was handed nothing at
-        # all while the same emission zoomed a browser smoothly.
-        profile = self.select("fusion360.exe")
-        self.assertGreaterEqual(
-            profile.number("wheel_speed", self.profiles.settings), 12.0
-        )
+        self.assertEqual(zoom.axes["y"], ("dy", 1.0))
+        self.assertLess(zoom.speed, 0.5, "a drag zoom at pointer_speed would bolt")
 
     def test_fusion_is_patient(self):
         profile = self.select("fusion360.exe")

@@ -142,13 +142,38 @@ To see a window's class: `hyprctl activewindow -j | jq -r .class`.
 | `browser-threejs`      | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
 | `default`              | everything else                                | mouse  |
 
-Fusion has its own profile for two reasons.
+Fusion has its own profile for three reasons.
 
-Its mouse conventions are backwards from everyone else's: in Fusion the middle
-button **pans** and shift plus middle **orbits**, where every other viewer does
-it the other way round. Its FIT button is deliberately unbound, because no
-fit-to-view shortcut can be relied on under Wine; put one in `fit_key` if you
-bind one yourself.
+**It assumes the SOLIDWORKS mouse preset**, in Preferences > General > Mouse
+setup (pan, zoom, orbit). Measured in the running Fusion with that preset
+selected:
+
+| chord                | what Fusion does                    |
+|----------------------|-------------------------------------|
+| middle drag          | orbit                               |
+| ctrl + middle drag   | pan                                 |
+| shift + middle drag  | zoom, continuously, down zooms in   |
+| middle double click  | fit                                 |
+| wheel                | zoom, in whole steps                |
+
+On Fusion's own default preset the middle button pans, shift plus middle
+orbits and there is no drag zoom at all, so **none of this profile lines up
+with it**. If you run the default preset, either switch Fusion to SOLIDWORKS
+or swap the profile's `hold` lists back: orbit `["shift", "middle"]`, pan
+`["middle"]`, and zoom as a `"mode": "wheel"` group on `y` with
+`"wheel_speed": 12` and `"wheel_curve": 1.0`.
+
+**Zoom is a drag rather than the wheel**, which is the whole reason the preset
+is worth switching. Everything under Xwayland is handed whole wheel clicks and
+nothing in between, so wheel zoom is a staircase: see [the
+wheel](#the-wheel-and-what-one-click-costs). Dragging is continuous, and it is
+the one navigation the wheel could never do smoothly here. It costs one thing:
+zoom is now a drag like the other two, so it takes its turn with them instead
+of running alongside, and the puck can no longer zoom while it orbits.
+
+Its FIT button is deliberately unbound, because no fit-to-view shortcut can be
+relied on under Wine. Fusion does fit on a middle double click, which the puck
+cannot ask for yet; put a key in `fit_key` if you bind one yourself.
 
 And **Fusion picks its orbit pivot from whatever is under the pointer** at the
 moment the button goes down. Nothing under the pointer means it falls back to
@@ -164,9 +189,7 @@ the pointer at all:
 "edge_guard": "off",       // and no warp at the window edge either
 "idle_release_ms": 350,    // a pause must not release the button
 "switch_hold_ms": 250,     // nor may a wobble swap orbit for pan
-"dominance_ratio": 2.0,
-"wheel_speed": 12,         // Wine only sees whole wheel clicks
-"wheel_curve": 1.0         // and a gentle push has to earn one
+"dominance_ratio": 2.0
 ```
 
 **In practice: put the pointer on the part of the model you want to turn
@@ -341,10 +364,17 @@ hand actually does:
 | 12 (the Fusion profile) | 160 | 1 | zooms |
 
 That is why Fusion's zoom did nothing while the identical emission zoomed
-Sketchfab happily, and why the Fusion profile carries `"wheel_speed": 12`. Any
-profile for an application that only understands clicks wants the same. The
-global 3.0 stays where it is, because that is the number the browser profile
-was tuned to by hand.
+Sketchfab happily. Any profile for an application that only understands clicks
+wants a wheel_speed around 12; the global 3.0 stays where it is, because that
+is the number the browser profile was tuned to by hand.
+
+**Fusion itself no longer zooms with the wheel at all.** Even at the right
+speed the clicks are a staircase, because the step per click is Fusion's own
+and has no setting, so speed and smoothness end up being one dial. The way out
+was the application's, not the daemon's: on the SOLIDWORKS mouse preset Fusion
+has a continuous drag zoom on shift plus middle, and the profile uses that
+instead. The numbers below are still what any wheel group lives by, and they
+are what made the case for switching.
 
 One related trap is handled rather than exposed: `wheel_hi_res: false` used to
 emit plain `REL_WHEEL` and nothing else, and plain `REL_WHEEL` scrolls nothing
@@ -364,9 +394,9 @@ What can be helped is the gentle half of the travel. The pointer keeps its
 fractions of a pixel, a wheel cannot move by a fraction of a click, so the
 range where the pointer merely crawls is the range where the wheel does
 nothing at all for a second at a time. `wheel_curve` gives a wheel group its
-own response curve, defaulting to the global `curve`. The Fusion profile sets
-it to 1.0, which lifts a gentle push from 1.9 to 3.0 clicks a second and
-leaves full deflection exactly where it was:
+own response curve, defaulting to the global `curve`. Setting it to 1.0 lifts
+a gentle push from 1.9 to 3.0 clicks a second and leaves full deflection
+exactly where it was:
 
 | push (raw counts) | clicks/s at `curve` 1.3 | at `wheel_curve` 1.0 |
 |-------------------|-------------------------|----------------------|
@@ -376,7 +406,9 @@ leaves full deflection exactly where it was:
 | 350 (full)        | 12.0                    | 12.0                 |
 
 A browser consumes every unit rather than whole clicks, so its profile keeps
-the global curve: there is no dead range there to lift.
+the global curve: there is no dead range there to lift. The slicer fallback,
+which does zoom with the wheel in an application that wants clicks, is the
+profile this is for.
 
 `-v` says what the wheel delivered, which is the difference between a gesture
 that never ran and one that ran and could not reach a click:
@@ -760,7 +792,7 @@ the tally line names (`area from window` or `area from monitor`).
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 265 tests, standard library only
+python3 tests/run.py            # 264 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```

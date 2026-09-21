@@ -61,41 +61,21 @@
     },
     {
       "name": "fusion",
-      "description": "Fusion 360 under Wine, using Fusion's own mouse conventions: the middle button pans, shift plus the middle button orbits, the wheel zooms. Its wheel_speed is four times the global one because everything running on Xwayland acts on whole wheel clicks only, and at the global speed a short push never reaches one. Fusion picks its orbit pivot from whatever is under the pointer when the button goes down, so this profile never moves the pointer: put it on the part of the model you want to turn around, then take hold of the puck.",
+      "description": "Fusion 360 under Wine, for the SOLIDWORKS mouse preset (Preferences > General > Mouse setup): the middle button orbits, ctrl plus middle pans, shift plus middle is a continuous drag zoom, and a middle double click fits the view. That preset is what this profile assumes; on Fusion's own default preset the middle button pans instead and nothing here lines up. Zoom is a drag rather than the wheel because everything under Xwayland sees whole wheel clicks only, which made wheel zoom a staircase. Fusion picks its orbit pivot from whatever is under the pointer when the button goes down, so this profile never moves the pointer: put it on the part of the model you want to turn around, then take hold of the puck.",
       "match": "^fusion360\\.exe$",
       "type": "mouse",
       "cursor": "keep",
       "clutch": "off",
       "edge_guard": "off",
       "idle_release_ms": 350,
-      "wheel_speed": 12,
-      "wheel_curve": 1.0,
       "switch_hold_ms": 250,
       "dominance_ratio": 2.0,
       "fit_key": "",
-      "fit_comment": "Fusion's fit command has no reliable key under Wine. Put one here (for example \"KEY_F6\") if you bind one yourself.",
+      "fit_comment": "Fusion fits the view on a middle double click, which no key can do under Wine. Put a key here if you bind one yourself.",
       "gestures": {
-        "pan": {
-          "enabled": true,
-          "hold": [
-            "middle"
-          ],
-          "speed": 1.0,
-          "axes": {
-            "x": {
-              "to": "dx",
-              "gain": 1.0
-            },
-            "z": {
-              "to": "dy",
-              "gain": -1.0
-            }
-          }
-        },
         "orbit": {
           "enabled": true,
           "hold": [
-            "shift",
             "middle"
           ],
           "speed": 1.0,
@@ -110,14 +90,35 @@
             }
           }
         },
-        "zoom": {
+        "pan": {
           "enabled": true,
-          "mode": "wheel",
+          "hold": [
+            "ctrl",
+            "middle"
+          ],
           "speed": 1.0,
           "axes": {
-            "y": {
-              "to": "wheel",
+            "x": {
+              "to": "dx",
+              "gain": 1.0
+            },
+            "z": {
+              "to": "dy",
               "gain": -1.0
+            }
+          }
+        },
+        "zoom": {
+          "enabled": true,
+          "hold": [
+            "shift",
+            "middle"
+          ],
+          "speed": 0.1,
+          "axes": {
+            "y": {
+              "to": "dy",
+              "gain": 1.0
             }
           }
         }

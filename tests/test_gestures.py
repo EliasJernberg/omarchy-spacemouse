@@ -526,14 +526,20 @@ class WheelReachTest(EngineFixture):
         self.tick(axes(y=150), dt=1 / 120.0, count=48)
         self.assertGreaterEqual(self.clicks(), 1)
 
-    def test_the_shipped_fusion_profile_reaches_a_click_on_a_short_push(self):
+    def test_the_shipped_slicer_fallback_reaches_a_click_on_a_short_push(self):
+        # The profile that still zooms with the wheel. Fusion's does not any
+        # more: under the SolidWorks preset it drags instead, which is the
+        # only way to get away from whole clicks under Xwayland.
         import json
 
         with open(sm.os.path.join(sm.repo_root(), "profiles.default.json")) as handle:
             spec = json.load(handle)
-        fusion = [p for p in spec["profiles"] if p["name"] == "fusion"][0]
+        fallback = [
+            p for p in spec["profiles"] if p["name"] == "bambu-mouse-fallback"
+        ][0]
         self.settings.update(spec["settings"])  # the shipped curve, not the fixture's
-        self.use(fusion)
+        self.settings["wheel_speed"] = 12.0
+        self.use(fallback)
         self.tick(axes(y=150), dt=1 / 120.0, count=48)
         self.assertGreaterEqual(self.clicks(), 1)
 
