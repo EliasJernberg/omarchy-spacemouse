@@ -89,6 +89,12 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertEqual(browser["orbit"].axes["ry"], ("dx", -1.0))
 
+    def test_fusion_zooms_the_way_the_puck_is_pushed(self):
+        # Direction is the hand's call, and the hand said the first one was
+        # backwards: lifting the puck now zooms in.
+        zoom = dict((g.name, g) for g in self.select("fusion360.exe").gestures)["zoom"]
+        self.assertEqual(zoom.axes["y"], ("wheel", -1.0))
+
     def test_fusion_zooms_in_whole_clicks_a_wine_app_can_see(self):
         # Everything on Xwayland acts on whole wheel clicks, and a click is
         # 120 high resolution units. At the global wheel_speed a comfortable
