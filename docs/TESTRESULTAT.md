@@ -1,7 +1,7 @@
 # Testresultat, omarchy-spacemouse
 
 Körningar på **vanessa** (Omarchy 4.x, Arch, Hyprland 0.56.2, Python 3.14.7,
-spacenavd 1.3.x, SpaceMouse Pro) 2026-09-18.
+spacenavd 1.3.x, SpaceMouse Pro), 2026-09-18 till 2026-09-21.
 
 ---
 
@@ -416,7 +416,86 @@ studsar in och ut ur marginalen så fort den kan ger max en per 500 ms.
 
 ---
 
-## 6. Det som återstår
+## 6. Femte omgången: orbit i Fusion blev pan
+
+Elias Fusion-pass 2026-09-21: pan (mittenknapp) fungerade, men en vridning av
+pucken sköt modellen **rakt i sidled** i stället för att rotera den, och en
+enstaka gång roterade den ändå. Kantskyddet var friskt den här gången (14
+gester, 0 warps, 0 clutchar, 0 kantclutchar, yta från fönstret), så felet låg
+inte i markörhanteringen.
+
+### Vad mätningen visade, steg för steg
+
+**1. Shift når X-klienter, det var aldrig problemet.** `tests/modifier_probe.c`
+är ett litet X-fönster som skriver ut modifiermasken på varje event, och
+`tests/live_modifier.py` kör en riktig gest mot det. Även med hela kombon i en
+enda evdev-ram såg klienten `KeyPress Shift_L` 0,2 ms före `ButtonPress
+button=2 state=0x0011`, alltså med ShiftMask satt, och varje `MotionNotify`
+under draget bar `0x0211`. Hypotesen att den virtuella enheten saknar
+tangentbordsplats i kompositorn stämmer heller inte: `hyprctl devices` listar
+`omarchy-spacemouse` både under mice och under Keyboards, och udev sätter
+`ID_INPUT_KEYBOARD=1` på noden.
+
+**2. Wine ser shift.** `wine notepad` i Fusions egen prefix, matad med `a`,
+sedan `shift+b` i en ram och `shift+b` med 50 ms lead: resultatet blev `aBB`.
+Tangentvägen genom Wine är alltså hel.
+
+**3. Fusion gör det ändå inte.** Med Fusion öppet och ViewCube som vittne (den
+rör sig när vyn roterar och aldrig när den panorerar) kördes samma drag om och
+om igen mot den körande applikationen:
+
+```
+gestmotorn, shift+mitten i en enda ram      0 orbit av 9   (4 bekräftade pan)
+för hand, shift och mitten i två ramar      3 orbit av 4
+för hand, två ramar med 20 ms emellan       4 orbit av 4
+för hand, två ramar med 60 ms emellan       4 orbit av 4
+enbart mittenknappen (kontroll)             0 orbit, alltid pan
+```
+
+Det är hela buggen. Ramen är gränsen: ligger shift och knappen i samma
+evdev-ram hinner Fusion aldrig se modifieraren när knappen går ner, och draget
+blir en pan. Att det "ibland roterade" var de gånger tidsfönstret råkade falla
+rätt.
+
+**4. Släppet var fel åt andra hållet.** Inne i en ram levererar kompositorn
+tangenten före knappen oavsett vilken ordning de skrevs i, så den gamla koden
+som släppte `[mitten upp, shift upp]` i en ram gav klienten `KeyRelease
+Shift_L` **före** `ButtonRelease`: varje orbit slutade som slutet på ett vanligt
+mittendrag.
+
+### Ändringen
+
+`modifier_lead_ms` (20 ms default, per profil överskuggbar). Modifierarna går
+ner i en egen ram, leaden väntas ut, sedan knappen. Släppet är spegelvänt:
+knappen först, modifierarna efter. `0` behåller de två ramarna och släpper bara
+väntan. Gester som bara håller en musknapp, alltså alla i webbläsar- och
+slicer-profilerna, emitteras precis som förut och väntar på ingenting.
+Nödvägen `release_all()` är orörd: där är en fastnad knapp värre än ordningen.
+
+Dessutom loggar `-v` numera vilken grupp som tog pucken:
+`gesture orbit holding shift+middle`. Journalen från passet ovan kunde inte
+svara på om det ens var orbit som var aktiv, vilket kostade en halv felsökning.
+
+### Verifiering
+
+- `python3 tests/run.py`: **250 tester, alla gröna** (238 plus 12 nya för
+  ramordning, lead, spegelvänt släpp, gruppbyte och `release_all`).
+- `tests/live_modifier.py` mot X-fönstret, med fixen: shift 20,1 ms före
+  knappen, `ButtonPress state=0x0011`, knappen upp medan shift fortfarande är
+  nere, `ButtonRelease state=0x0211`. Alla sex kontroller gröna, tre körningar
+  i rad.
+- Gestmotorn mot körande Fusion efter fixen: **6 orbit av 6** (före: 0 av 9).
+- Tjänsten omstartad, `spacemouse-ctl status` friskt, `control.sock` och
+  `status.json` på plats.
+
+En sak till mättes och förkastades: en separat virtuell tangentbordsenhet för
+modifierarna. Mätningen ovan visar att den kombinerade enheten redan levererar
+shift korrekt till X-lagret, så en andra enhet hade lagt till udev-yta,
+pekar-arbitrering och en till sak som kan fastna, utan att lösa något.
+
+---
+
+## 7. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")

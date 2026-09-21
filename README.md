@@ -257,6 +257,10 @@ the wheel.
 - `hold` is pressed while the gesture is active, in the order written
   (modifiers first). Names: `left`, `right`, `middle`, `side`, `extra`, plus
   `shift`, `ctrl`, `alt`, `super` and any `KEY_*` from the Linux keycode table.
+  A modifier goes down in a frame of its own and the button follows
+  `modifier_lead_ms` later, and on the way up the button goes first and the
+  modifier outlives it. See [Modifiers and the frame they travel
+  in](#modifiers-and-the-frame-they-travel-in).
 - `axes` maps a puck axis to `dx`, `dy`, `wheel` or `hwheel`, through a `gain`
   that also carries the sign. Flip a `gain` to reverse a direction.
 - `mode` is `drag` (default) or `wheel`.
@@ -276,6 +280,42 @@ released.
 Every profile change, every `disable` and every shutdown releases whatever is
 held, immediately. A stuck middle button would make the desktop unusable, so
 that path is covered by its own tests.
+
+### Modifiers and the frame they travel in
+
+A gesture like Fusion's orbit holds `shift` and the middle button together,
+and the obvious way to emit that is one evdev frame with both events in it.
+That is what this did at first, and it looks correct from the outside: the
+compositor delivers the key before the button, and an X client really does see
+`ShiftMask` on the `ButtonPress`. `tests/live_modifier.py` measures exactly
+that, against a small X window of its own.
+
+Fusion under Wine does not act on it. Measured against the running Fusion, with
+the ViewCube as the witness (it moves when the view rotates and never when it
+pans): a single-frame `shift`+middle orbited **0 times out of 9** and panned
+instead, the same press split into two frames 20 ms apart orbited **8 times out
+of 8**. That is the whole bug. A drag that should have turned the model slid it
+sideways, and now and then, when the timing fell the right way, it turned after
+all, which is what made it look random.
+
+So a combo is emitted in two frames: the modifiers first, alone, then
+`modifier_lead_ms` (20 by default) of nothing, then the button. The release
+mirrors it: the button lets go first and the modifiers outlive it, because
+inside a single frame the compositor delivers the key before the button
+whatever order it was written in, which used to end every orbit as the end of a
+plain middle drag. Setting `modifier_lead_ms` to 0 keeps the two frames and
+only drops the wait; a gesture that holds nothing but a mouse button, which is
+every gesture in the browser and slicer profiles, is emitted exactly as before
+and waits for nothing.
+
+Run `spacemoused -v` and the log names the group that took the puck, with the
+combo it is holding, which is the fastest way to tell an application that
+ignores a modifier from a gesture that never started:
+
+```
+omarchy-spacemouse: gesture orbit holding shift+middle
+omarchy-spacemouse: gesture cursor: 0 warp(s), 0 clutch(es), 0 edge clutch(es), area from window
+```
 
 ### What happens to the mouse pointer
 
@@ -499,13 +539,15 @@ Everything in `settings` applies to every profile:
 | `edge_margin`        | 20      | how close to the window edge the edge guard fires, in pixels.     |
 | `edge_guard_cooldown_ms` | 500 | the edge guard may not fire more often than this.                 |
 | `switch_hold_ms`     | 0       | how long a competitor must stay dominant before taking over.      |
+| `modifier_lead_ms`   | 20      | how long a gesture's modifiers are held before its button goes down. |
 | `activate_threshold` | 0.0     | extra gate on the normalized magnitude. Normally left at zero.    |
 | `release_threshold`  | 0.0     | same, for keeping a gesture alive.                                |
 
 Any profile can set these for itself, and the profile's value wins:
-`idle_release_ms`, `switch_hold_ms`, `dominance_ratio`, `pointer_speed`,
-`wheel_speed`, `smoothing_ms`, `clutch_fraction`, `engage_deadzone`,
-`deadzone`, `curve`, `sensitivity`, plus the `cursor` and `clutch` policies.
+`idle_release_ms`, `switch_hold_ms`, `modifier_lead_ms`, `dominance_ratio`,
+`pointer_speed`, `wheel_speed`, `smoothing_ms`, `clutch_fraction`,
+`engage_deadzone`, `deadzone`, `curve`, `sensitivity`, plus the `cursor` and
+`clutch` policies.
 An application's feel is its own business.
 
 **The two dials worth your time.** Everything else has a defensible default;
@@ -635,7 +677,7 @@ the tally line names (`area from window` or `area from monitor`).
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 238 tests, standard library only
+python3 tests/run.py            # 250 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```
@@ -680,6 +722,24 @@ python3 tests/live_check.py
 It is not part of `tests/run.py`, because it is the only thing here that
 touches the kernel. Without the second udev rule above it still creates the
 device and emits, and reports the readback as skipped rather than failed.
+
+### Checking that a modifier reaches the application
+
+`tests/live_modifier.py` answers the question a gesture like Fusion's orbit
+depends on: does the `shift` in the combo actually reach the window, before the
+button and not after it? It builds `tests/modifier_probe.c` (a 120 line X
+client that prints the modifier mask on every event, because `xev` is not
+installed everywhere), borrows the focus for about a second, plays one real
+gesture through the real engine, and reads back what the client got.
+
+```bash
+python3 tests/live_modifier.py                  # the shipped 20 ms lead
+python3 tests/live_modifier.py --lead 0         # no wait, still two frames
+python3 tests/live_modifier.py --profile default --gesture pan
+```
+
+It needs a quiet machine: if the probe loses the focus mid-gesture, the events
+went somewhere else and the run says so instead of failing the daemon for it.
 
 ### Checking the directions in a browser
 
