@@ -682,7 +682,83 @@ tar vyn från översikt till närbild.
 
 ---
 
-## 9. Det som återstår
+## 9. Åttonde omgången: SOLIDWORKS-presetet och drag-zoom
+
+Elias bytte själv Fusions "Mouse setup (pan, zoom, orbit)" till SOLIDWORKS.
+Profilen är ombyggd för det, med drag-zoom som hela poängen.
+
+### Uppmätt mappning i presetet
+
+Mätt i körande Fusion, ett ackord i taget med Fit före varje så att vyn är
+känd, och med bilder att titta på i stället för att lita på en metrik:
+
+| ackord | vad Fusion gör |
+|---|---|
+| mitten | **orbit** |
+| ctrl+mitten | **pan** |
+| shift+mitten | **zoom, kontinuerligt**, pekare ner = in |
+| mitten-dubbelklick | **fit** |
+| hjul | zoom i hela steg (kvar) |
+| alt+mitten | inget eget, faller igenom till orbit |
+
+Två mätfällor kostade tid och är värda att skriva ner: (1) ett mätområde utan
+modell i döljer en pan helt, eftersom rutnätet är periodiskt, och (2)
+ViewCube-masken luras av modellens **ljusa** ytor när man är inzoomad, och av
+scenens röda och gröna axellinjer om man maskar på färgmättnad. Fit före varje
+mätning plus ögon på bilderna var det som gjorde svaren entydiga.
+
+### Profilen
+
+```
+orbit   hold [middle]          rx→dy +1.0,  ry→dx +1.0
+pan     hold [ctrl, middle]    x→dx  +1.0,  z→dy  -1.0
+zoom    hold [shift, middle]   y→dy  +1.0,  speed 0.1
+```
+
+Zoomgesten har `speed 0.1` därför att en drag-zoom annars körs med
+`pointer_speed` 900 px/s, och 100 px drag är redan ungefär en fördubbling av
+vyn. 0.1 ger ungefär 2x per sekund vid fullt utslag, kontrollerbart.
+
+**Hjulgesten är borttagen ur fusion-profilen.** Den låg på samma axel (`y`)
+som drag-zoomen och wheel-grupper kör parallellt med drag, så båda kvar hade
+betytt dubbelstyrning. Priset: zoom är nu en drag-gest som turas om med orbit
+och pan i stället för att kunna köras samtidigt. `wheel_speed` och
+`wheel_curve` är också borta ur profilen, de var döda inställningar utan
+hjulgest.
+
+`cursor: keep`, `clutch: off` och `edge_guard: off` står kvar: pivoten tas
+fortfarande under pekaren.
+
+### Verifiering mot körande Fusion
+
+Genom den riktiga gestmotorn, en axel i taget, med Fit före och bilder efter:
+
+- `ry` → **orbit**, modellen vrider sig,
+- `x` med ctrl → **pan**, modellen flyttar sig utan att vridas,
+- `y` med shift → **zoom in**, modellen växer. Puck-lyft (+y) zoomar in, vilket
+  är Elias fastslagna riktning.
+- Inga knappar eller modifierare kvar nedtryckta efter någon gest
+  (`held at the end: []`).
+
+**Latch-kontroll:** sekvensen orbit → pan → orbit → zoom → orbit → pan → orbit
+kördes genom motorn. **Alla fyra orbit-stegen roterade**, också direkt efter en
+pan och direkt efter en zoom. Hade ctrl eller shift blivit hängande hade nästa
+orbit blivit pan respektive zoom. Ingen latch alltså i det nya presetet, till
+skillnad från shift-latchen i avsnitt 7 (som nu dessutom är mindre farlig:
+orbit, den gest som används mest, har ingen modifierare alls och kan därmed
+inte drabbas av 20 ms-leaden heller).
+
+### Verifiering
+
+- `python3 tests/run.py`: **264 tester, alla gröna** (profiltesterna skrivna
+  om för presetet: ackorden, att zoom är en drag-gest och inte en hjulgest,
+  riktningen, och att hjultestet flyttat till slicer-fallbacken som fortfarande
+  har en hjulgest).
+- Tjänsten omstartad, status friskt, Fusions vy lämnad på Fit.
+
+---
+
+## 10. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")
