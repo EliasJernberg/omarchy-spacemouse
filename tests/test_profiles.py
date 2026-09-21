@@ -74,6 +74,21 @@ class ShippedDefaultsTest(unittest.TestCase):
         for name in ("browser-threejs", "default"):
             self.assertTrue(self.profiles.by_name(name).edge_guard, name)
 
+    def test_fusion_turns_the_model_the_way_the_puck_turns(self):
+        # The sign is not derivable, it is what the hand on the puck says, and
+        # the hand said the first one was mirrored: twisting the puck one way
+        # turned the model the other. Fusion orbits the camera around a pivot
+        # while a Three.js viewer drags the model itself, so the same puck
+        # axis genuinely needs opposite signs in the two profiles. Pinned here
+        # so a tidy-up does not quietly swap it back.
+        fusion = dict((g.name, g) for g in self.select("fusion360.exe").gestures)
+        self.assertEqual(fusion["orbit"].axes["ry"], ("dx", 1.0))
+        self.assertEqual(fusion["orbit"].axes["rx"], ("dy", 1.0))
+        browser = dict(
+            (g.name, g) for g in self.profiles.by_name("browser-threejs").gestures
+        )
+        self.assertEqual(browser["orbit"].axes["ry"], ("dx", -1.0))
+
     def test_fusion_is_patient(self):
         profile = self.select("fusion360.exe")
         settings = self.profiles.settings
@@ -173,8 +188,12 @@ class ShippedDefaultsTest(unittest.TestCase):
     def test_the_omarchy_tui_windows_are_off_too(self):
         # Omarchy launches its TUIs as org.omarchy.<name>, so the whole prefix
         # has to be covered, not just the terminal emulators by name.
-        for window_class in ("org.omarchy.terminal", "org.omarchy.about",
-                             "org.omarchy.btop", "org.omarchy.screensaver"):
+        for window_class in (
+            "org.omarchy.terminal",
+            "org.omarchy.about",
+            "org.omarchy.btop",
+            "org.omarchy.screensaver",
+        ):
             self.assertEqual(self.select(window_class).type, "off", window_class)
 
     def test_matching_is_case_insensitive(self):
@@ -422,7 +441,9 @@ class FocusGraceTest(unittest.TestCase):
 
     def daemon(self, *extra):
         args = sm.build_parser().parse_args(
-            ["--config", "/nonexistent/profiles.json", "--defaults", DEFAULT_PROFILES] + list(extra))
+            ["--config", "/nonexistent/profiles.json", "--defaults", DEFAULT_PROFILES]
+            + list(extra)
+        )
         return sm.SpaceMouseDaemon(args)
 
     def test_no_profile_is_applied_before_focus_is_known(self):
@@ -455,7 +476,7 @@ class FocusGraceTest(unittest.TestCase):
 
     def test_an_empty_workspace_emits_nothing(self):
         daemon = self.daemon()
-        daemon.on_focus("", "")          # Hyprland's "activewindow>>," 
+        daemon.on_focus("", "")  # Hyprland's "activewindow>>,"
         self.assertIs(daemon.select_for(""), sm.OFF_PROFILE)
 
     def test_a_window_without_a_class_still_gets_the_fallback(self):
