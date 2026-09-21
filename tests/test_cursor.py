@@ -9,7 +9,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import FakeClock, key_events, rel_events, sm  # noqa: E402
+from harness import FakeClock, FakeSleep, key_events, rel_events, sm  # noqa: E402
 
 SHIFT = sm.KEY_NAMES["KEY_LEFTSHIFT"]
 
@@ -193,8 +193,13 @@ class EngineCursorTest(unittest.TestCase):
         self.settings["curve"] = 1.0
         self.settings["smoothing_ms"] = 0.0
         self.cursor = sm.CursorController(self.settings, hypr=self.hypr)
+        self.sleep = FakeSleep()
         self.engine = sm.GestureEngine(
-            self.device, self.settings, clock=self.clock, cursor=self.cursor
+            self.device,
+            self.settings,
+            clock=self.clock,
+            cursor=self.cursor,
+            sleep=self.sleep,
         )
         self.engine.set_profile(sm.Profile(self.PROFILE))
 
@@ -452,8 +457,13 @@ class ProfileCursorPolicyTest(unittest.TestCase):
         self.settings["curve"] = 1.0
         self.settings["smoothing_ms"] = 0.0
         self.cursor = sm.CursorController(self.settings, hypr=self.hypr)
+        self.sleep = FakeSleep()
         self.engine = sm.GestureEngine(
-            self.device, self.settings, clock=self.clock, cursor=self.cursor
+            self.device,
+            self.settings,
+            clock=self.clock,
+            cursor=self.cursor,
+            sleep=self.sleep,
         )
         self.profile = sm.Profile(self.FUSION)
         self.engine.set_profile(self.profile)

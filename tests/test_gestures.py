@@ -10,7 +10,14 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import FakeClock, key_events, rel_events, sm  # noqa: E402
+from harness import (  # noqa: E402
+    FakeClock,
+    FakeSleep,
+    key_batches,
+    key_events,
+    rel_events,
+    sm,
+)
 
 SHIFT = sm.KEY_NAMES["KEY_LEFTSHIFT"]
 HOME = sm.KEY_NAMES["KEY_HOME"]
@@ -61,7 +68,10 @@ class EngineFixture(unittest.TestCase):
         self.device = sm.TraceDevice(stream=None)
         self.settings = dict(sm.DEFAULT_SETTINGS)
         self.settings["curve"] = 1.0
-        self.engine = sm.GestureEngine(self.device, self.settings, clock=self.clock)
+        self.sleep = FakeSleep()
+        self.engine = sm.GestureEngine(
+            self.device, self.settings, clock=self.clock, sleep=self.sleep
+        )
 
     def use(self, spec):
         profile = sm.Profile(spec)
@@ -98,7 +108,9 @@ class GroupSelectionTest(EngineFixture):
         # "the" gesture and never blocks one.
         self.assertEqual(self.engine.active_name, "")
         self.assertEqual(self.held(), [])
-        self.assertTrue([v for c, v in rel_events(self.device) if c == sm.REL_WHEEL_HI_RES])
+        self.assertTrue(
+            [v for c, v in rel_events(self.device) if c == sm.REL_WHEEL_HI_RES]
+        )
 
     def test_zoom_runs_at_the_same_time_as_a_drag(self):
         # 3Dconnexion's own driver lets you push into the model while turning
@@ -110,7 +122,9 @@ class GroupSelectionTest(EngineFixture):
         self.assertEqual(self.held(), [sm.BTN_MIDDLE])
         rel = rel_events(self.device)
         self.assertTrue([v for c, v in rel if c == sm.REL_Y], "orbit should move")
-        self.assertTrue([v for c, v in rel if c == sm.REL_WHEEL_HI_RES], "zoom should scroll")
+        self.assertTrue(
+            [v for c, v in rel if c == sm.REL_WHEEL_HI_RES], "zoom should scroll"
+        )
 
     def test_the_dominant_axis_group_wins(self):
         self.use(CAD_PROFILE)
@@ -452,6 +466,160 @@ class KeysProfileTest(EngineFixture):
         self.assertEqual(self.held(), [SHIFT])
         self.use(CAD_PROFILE)
         self.assertEqual(self.held(), [])
+
+
+class ModifierOrderTest(EngineFixture):
+    """A modifier has to be down, and seen to be down, before its button.
+
+    Fusion under Wine is the reason this is not just tidiness: a shift+middle
+    combo emitted in one frame never reached it as an orbit (0 of 9 live
+    attempts), the same combo split into two frames 20 ms apart reached it
+    every time (8 of 8). Everything below is that rule, written down.
+    """
+
+    def test_the_modifier_goes_out_in_a_frame_of_its_own(self):
+        self.use(CAD_PROFILE)
+        self.tick(axes(x=300), count=3)
+        frames = key_batches(self.device)
+        self.assertEqual(frames[0], [(SHIFT, 1)])
+        self.assertEqual(frames[1], [(sm.BTN_MIDDLE, 1)])
+
+    def test_the_lead_is_waited_out_between_the_two_frames(self):
+        self.use(CAD_PROFILE)
+        self.tick(axes(x=300), count=3)
+        self.assertEqual(self.sleep.waits, [0.02])
+
+    def test_the_lead_is_configurable_and_zero_only_drops_the_wait(self):
+        self.settings["modifier_lead_ms"] = 0.0
+        self.use(CAD_PROFILE)
+        self.tick(axes(x=300), count=3)
+        self.assertEqual(self.sleep.waits, [])
+        frames = key_batches(self.device)
+        self.assertEqual(frames[0], [(SHIFT, 1)])
+        self.assertEqual(frames[1], [(sm.BTN_MIDDLE, 1)])
+
+    def test_a_profile_may_set_its_own_lead(self):
+        spec = dict(CAD_PROFILE)
+        spec["modifier_lead_ms"] = 45
+        self.use(spec)
+        self.tick(axes(x=300), count=3)
+        self.assertEqual(self.sleep.waits, [0.045])
+
+    def test_a_gesture_without_a_modifier_waits_for_nothing(self):
+        self.use(CAD_PROFILE)
+        self.tick(axes(rx=300), count=3)
+        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(key_batches(self.device), [[(sm.BTN_MIDDLE, 1)]])
+
+    def test_the_release_is_the_mirror_of_the_press(self):
+        # The button lets go first and the modifier outlives it, because a
+        # single frame would deliver the key first and end the drag as a plain
+        # middle drag in the application's eyes.
+        self.use(CAD_PROFILE)
+        self.tick(axes(x=300), count=3)
+        self.device.records = []
+        self.sleep.waits = []
+        self.tick(axes(), dt=0.05, count=4)
+        self.assertEqual(self.held(), [])
+        frames = key_batches(self.device)
+        self.assertEqual(frames[0], [(sm.BTN_MIDDLE, 0)])
+        self.assertEqual(frames[1], [(SHIFT, 0)])
+        self.assertEqual(self.sleep.waits, [0.02])
+
+    def test_a_switch_between_groups_keeps_both_halves_in_order(self):
+        self.use(CAD_PROFILE)
+        self.tick(axes(x=300), count=3)
+        self.device.records = []
+        self.tick(axes(rx=300), count=3)
+        self.assertEqual(self.engine.active_name, "orbit")
+        frames = key_batches(self.device)
+        # pan lets go button-first, then shift, then orbit takes the button.
+        self.assertEqual(frames[0], [(sm.BTN_MIDDLE, 0)])
+        self.assertEqual(frames[1], [(SHIFT, 0)])
+        self.assertEqual(frames[2], [(sm.BTN_MIDDLE, 1)])
+
+    def test_a_clutch_keeps_the_modifier_down_across_the_recentre(self):
+        # A clutch is one drag, not two, so the modifier must not blink: an
+        # application that re-reads the world on a button change would see a
+        # plain middle press in the middle of a shift+middle drag.
+        class Cursor(object):
+            def __init__(self):
+                self.clutches = 0
+
+            def begin(self, **kwargs):
+                return True
+
+            def moved(self, dx, dy):
+                return self.clutches < 1
+
+            def clutch(self):
+                self.clutches += 1
+                return True
+
+            def end(self):
+                return True
+
+        cursor = Cursor()
+        engine = sm.GestureEngine(
+            self.device,
+            self.settings,
+            clock=self.clock,
+            sleep=self.sleep,
+            cursor=cursor,
+        )
+        engine.set_profile(sm.Profile(CAD_PROFILE))
+        for _ in range(4):
+            self.clock.advance(1 / 60.0)
+            engine.tick(axes(x=300), 1 / 60.0)
+        self.assertEqual(engine.clutches, 1)
+        frames = key_batches(self.device)
+        # shift down, middle down, then the clutch: middle alone, both ways.
+        self.assertEqual(frames[0], [(SHIFT, 1)])
+        self.assertEqual(frames[1], [(sm.BTN_MIDDLE, 1)])
+        self.assertEqual(frames[2], [(sm.BTN_MIDDLE, 0)])
+        self.assertEqual(frames[3], [(sm.BTN_MIDDLE, 1)])
+        self.assertEqual(self.sleep.waits, [0.02], "a clutch waits for nothing")
+        self.assertEqual(self.device.pressed, [SHIFT, sm.BTN_MIDDLE])
+
+    def test_release_all_still_drops_everything_in_one_go(self):
+        # The emergency path is not the place for ceremony: a stuck button is
+        # worse than a modifier that leaves in the wrong order.
+        self.use(CAD_PROFILE)
+        self.tick(axes(x=300), count=3)
+        self.device.records = []
+        self.engine.release_all()
+        self.assertEqual(self.held(), [])
+        self.assertEqual(key_batches(self.device), [[(sm.BTN_MIDDLE, 0), (SHIFT, 0)]])
+
+    def test_split_combo_keeps_each_side_in_its_own_order(self):
+        codes = sm.parse_combo("ctrl+shift+middle")
+        modifiers, buttons = sm.split_combo(codes)
+        self.assertEqual(
+            modifiers,
+            [sm.KEY_NAMES["KEY_LEFTCTRL"], sm.KEY_NAMES["KEY_LEFTSHIFT"]],
+        )
+        self.assertEqual(buttons, [sm.BTN_MIDDLE])
+
+    def test_combo_name_reads_back_what_a_profile_wrote(self):
+        self.assertEqual(sm.combo_name(sm.parse_combo("shift+middle")), "shift+middle")
+        self.assertEqual(sm.combo_name(sm.parse_combo(["ctrl", "left"])), "ctrl+left")
+        self.assertEqual(sm.combo_name(sm.parse_combo("KEY_HOME")), "home")
+        self.assertEqual(sm.combo_name([]), "")
+
+    def test_the_active_gesture_is_named_in_the_log(self):
+        lines = []
+        engine = sm.GestureEngine(
+            self.device,
+            self.settings,
+            clock=self.clock,
+            sleep=self.sleep,
+            log=lines.append,
+        )
+        engine.set_profile(sm.Profile(CAD_PROFILE))
+        for _ in range(3):
+            self.clock.advance(1 / 60.0)
+            engine.tick(axes(x=300), 1 / 60.0)
+        self.assertIn("gesture pan holding shift+middle", lines)
 
 
 if __name__ == "__main__":

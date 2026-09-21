@@ -108,6 +108,52 @@ class FakeClock(object):
         return self.now
 
 
+class FakeSleep(object):
+    """Stands in for time.sleep and writes down what it was asked to wait.
+
+    The engine waits in exactly one place, the modifier lead, and a test that
+    really slept there would pay 20 ms per gesture for nothing. It does not
+    move the clock: the engine's own timing is driven by FakeClock, and the
+    lead is a wait on the rest of the stack, not on the gesture machine.
+    """
+
+    def __init__(self):
+        self.waits = []
+
+    def __call__(self, seconds):
+        self.waits.append(seconds)
+
+
+def batches(device):
+    """Every batch a TraceDevice emitted, as lists of (type, code, value).
+
+    One batch is one SYN_REPORT, which is what the kernel and everything above
+    it treat as a single frame, so this is how a test asks whether two events
+    went out together or one after the other.
+    """
+    out = []
+    for line in device.records:
+        if not line.startswith("syn "):
+            continue
+        out.append(
+            [
+                tuple(int(part) for part in token.split(":"))
+                for token in line[4:].split()
+            ]
+        )
+    return out
+
+
+def key_batches(device):
+    """The same, keeping only the batches that carry key or button events."""
+    out = []
+    for batch in batches(device):
+        keys = [(code, value) for etype, code, value in batch if etype == sm.EV_KEY]
+        if keys:
+            out.append(keys)
+    return out
+
+
 def key_events(device):
     """(code, value) for every EV_KEY event a TraceDevice recorded."""
     out = []

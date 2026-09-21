@@ -80,6 +80,7 @@ AXES = ("x", "y", "z", "rx", "ry", "rz")
 PROFILE_OVERRIDABLE = (
     "idle_release_ms",
     "switch_hold_ms",
+    "modifier_lead_ms",
     "dominance_ratio",
     "pointer_speed",
     "wheel_speed",
@@ -369,6 +370,20 @@ MODIFIER_ALIASES = {
 
 MOUSE_BUTTON_CODES = frozenset(BUTTON_NAMES.values())
 
+# The way back, for the log: a code to the friendliest name it has. The alias
+# wins where there is one ("shift" rather than "leftshift"), because that is
+# what a profile writes.
+BUTTON_CODE_NAMES = dict((code, name) for name, code in BUTTON_NAMES.items())
+KEY_CODE_NAMES = {}
+for _key_name, _key_code in KEY_NAMES.items():
+    KEY_CODE_NAMES.setdefault(
+        _key_code,
+        _key_name[4:].lower() if _key_name.startswith("KEY_") else _key_name.lower(),
+    )
+for _alias, _key_name in reversed(list(MODIFIER_ALIASES.items())):
+    KEY_CODE_NAMES[KEY_NAMES[_key_name]] = _alias
+del _key_name, _key_code, _alias
+
 # Every key code the virtual device declares. 1..255 covers the keyboard block
 # (which udev needs in order to tag the device as a keyboard at all) and the
 # media and consumer keys above it, so a physical mouse being proxied through
@@ -408,7 +423,6 @@ DEFAULT_POINTER_EXCLUDE_NAMES = (
 DEFAULT_POINTER_EXCLUDE_IDS = ("046d:c62b", "5350:4d53")
 
 
-
 def resolve_token(token):
     """Turn one token ("middle", "shift", "KEY_HOME", "home", "f5") into a code."""
     name = str(token).strip()
@@ -438,6 +452,29 @@ def resolve_token(token):
             if upper == code_name:
                 return code
     raise ValueError("unknown key or button '%s'" % token)
+
+
+def split_combo(codes):
+    """Split a combo into (modifiers, buttons), each in its original order.
+
+    Anything that is not a mouse button counts as a modifier here, because
+    that is what the ordering rule is about: whatever qualifies the button has
+    to be down before the button is, whether it is shift or F4.
+    """
+    modifiers = [code for code in codes if code not in MOUSE_BUTTON_CODES]
+    buttons = [code for code in codes if code in MOUSE_BUTTON_CODES]
+    return modifiers, buttons
+
+
+def combo_name(codes):
+    """ "shift+middle" for a list of codes, for the log and for status."""
+    names = []
+    for code in codes:
+        if code in MOUSE_BUTTON_CODES:
+            names.append(BUTTON_CODE_NAMES.get(code, str(code)))
+        else:
+            names.append(KEY_CODE_NAMES.get(code, str(code)))
+    return "+".join(names)
 
 
 def parse_combo(spec):
@@ -829,6 +866,16 @@ DEFAULT_SETTINGS = {
     # Zero switches immediately; a profile that re-reads the world on every
     # button change wants some patience here.
     "switch_hold_ms": 0.0,
+    # How long a gesture's modifiers are held on their own before its button
+    # goes down, and how long they outlive it on the way back up. A combo used
+    # to go down in a single evdev frame, which looks right from the outside:
+    # the compositor delivers the key before the button and a plain X client
+    # sees ShiftMask on the ButtonPress. Fusion under Wine does not see it.
+    # Measured against the running Fusion: shift+middle in one frame orbited 0
+    # times out of 9 and panned instead, the same press split into two frames
+    # 20 ms apart orbited 8 times out of 8. Zero still splits the frames, it
+    # only drops the wait.
+    "modifier_lead_ms": 20.0,
     "flat_acceleration": True,
     # Pointer arbitration: "proxied" takes the physical mice over so they
     # cannot fight the puck mid-drag, "shared" leaves them alone.
@@ -932,12 +979,14 @@ class Profile(object):
         self.cursor_mode = str(spec.get("cursor") or "center")
         if self.cursor_mode not in ("center", "keep"):
             raise ValueError(
-                "profile '%s' has unknown cursor mode '%s'" % (self.name, self.cursor_mode)
+                "profile '%s' has unknown cursor mode '%s'"
+                % (self.name, self.cursor_mode)
             )
         self.clutch_mode = str(spec.get("clutch") or "auto")
         if self.clutch_mode not in ("auto", "off"):
             raise ValueError(
-                "profile '%s' has unknown clutch mode '%s'" % (self.name, self.clutch_mode)
+                "profile '%s' has unknown clutch mode '%s'"
+                % (self.name, self.clutch_mode)
             )
         # The edge guard is the last warp standing in keep mode, and in keep
         # mode the pointer belongs to the user. Off there unless asked for.
@@ -1173,12 +1222,22 @@ class GestureEngine(object):
     """
 
     def __init__(
-        self, device, settings=None, log=None, clock=time.monotonic, cursor=None
+        self,
+        device,
+        settings=None,
+        log=None,
+        clock=time.monotonic,
+        cursor=None,
+        sleep=time.sleep,
     ):
         self.device = device
         self.settings = settings or dict(DEFAULT_SETTINGS)
         self.log = log or (lambda message: None)
         self.clock = clock
+        # Only ever used for the modifier lead, which is the one place where
+        # the engine has to wait for the rest of the stack to catch up. The
+        # tests hand in a fake that moves their clock instead of sleeping.
+        self.sleep = sleep
         self.cursor = cursor
         self.profile = OFF_PROFILE
         self.active = None  # active drag Gesture
@@ -1231,14 +1290,65 @@ class GestureEngine(object):
 
     # -- gesture selection -------------------------------------------------
 
+    def modifier_lead(self):
+        """Seconds between a gesture's modifiers and its button."""
+        return self.profile.number("modifier_lead_ms", self.settings, 20.0) / 1000.0
+
     def _press(self, gesture):
-        for code in gesture.hold:
-            self.device.key_down(code)
-        if gesture.hold:
+        """Put the combo down: the modifiers first, in a frame of their own.
+
+        This used to be one frame for the whole combo, which reads correctly
+        from the outside. The compositor delivers the key before the button
+        and a plain X client sees ShiftMask on the ButtonPress; that was
+        measured, not assumed. Fusion under Wine still does not act on it:
+        against the running Fusion, shift+middle in a single frame orbited 0
+        times out of 9 and panned instead, while the same press split into two
+        frames 20 ms apart orbited 8 times out of 8. So the modifiers go down
+        alone, they are given modifier_lead_ms to land, and the button
+        follows. A gesture that holds only a button, which is every gesture in
+        the browser and slicer profiles, is emitted exactly as before and
+        waits for nothing.
+        """
+        if not gesture.hold:
+            return
+        modifiers, buttons = split_combo(gesture.hold)
+        if not (modifiers and buttons):
+            for code in gesture.hold:
+                self.device.key_down(code)
             self.device.syn()
+            return
+        for code in modifiers:
+            self.device.key_down(code)
+        self.device.syn()
+        lead = self.modifier_lead()
+        if lead > 0:
+            self.sleep(lead)
+        for code in buttons:
+            self.device.key_down(code)
+        self.device.syn()
 
     def _release(self, gesture):
-        for code in reversed(gesture.hold):
+        """Let go in the mirror image: the button first, the modifiers after.
+
+        Same reason as the press, and one more: inside a single frame the
+        compositor delivers the key before the button whatever order they were
+        written in, so the old single-frame release let shift go up while the
+        button was still down. An application that reads the modifier when the
+        drag ends saw the end of a plain middle drag every time.
+        """
+        modifiers, buttons = split_combo(gesture.hold)
+        if not (modifiers and buttons):
+            for code in reversed(gesture.hold):
+                self.device.key_up(code)
+            self.device.syn()
+            return
+        for code in reversed(buttons):
+            self.device.key_up(code)
+        self.device.syn()
+        lead = self.modifier_lead()
+        if lead > 0:
+            self.sleep(lead)
+        for code in reversed(modifiers):
             self.device.key_up(code)
         self.device.syn()
 
@@ -1261,6 +1371,13 @@ class GestureEngine(object):
                 )
             except Exception as exc:  # noqa: BLE001
                 self.log("could not park the cursor: %s" % exc)
+        # Which group actually won is the first thing anyone asks when an
+        # application does the wrong thing with the puck, and until now the
+        # log could not answer it: the cursor tally at the end of a gesture
+        # says how the pointer behaved, not whether this was orbit or pan.
+        self.log(
+            "gesture %s holding %s" % (gesture.name, combo_name(gesture.hold) or "-")
+        )
         self._press(gesture)
 
     def _deactivate(self, unwarp=True):
@@ -1280,13 +1397,24 @@ class GestureEngine(object):
         Without this a long orbit walks the pointer into a screen edge and
         simply stops, which is the single most irritating thing a synthetic
         drag can do.
+
+        Only the buttons let go. The modifiers stay down across the recentre,
+        which is both faster and more correct than lifting the whole combo:
+        the application never sees the button arrive without them, and the
+        clutch costs no modifier lead in the middle of a drag.
         """
-        self._release(gesture)
+        modifiers, buttons = split_combo(gesture.hold)
+        codes = buttons or list(gesture.hold)
+        for code in reversed(codes):
+            self.device.key_up(code)
+        self.device.syn()
         try:
             self.cursor.clutch()
         except Exception as exc:  # noqa: BLE001
             self.log("clutch failed: %s" % exc)
-        self._press(gesture)
+        for code in codes:
+            self.device.key_down(code)
+        self.device.syn()
         self.clutches += 1
 
     def tick(self, raw_axes, dt, profile_set=None):
@@ -1675,7 +1803,10 @@ def hypr_drag_area():
             continue
         if not client.get("mapped", True) or client.get("hidden", False):
             continue
-        if workspace is not None and (client.get("workspace") or {}).get("id") != workspace:
+        if (
+            workspace is not None
+            and (client.get("workspace") or {}).get("id") != workspace
+        ):
             continue
         at, size = client.get("at"), client.get("size")
         if not (isinstance(at, list) and isinstance(size, list)):
@@ -1788,15 +1919,15 @@ class CursorController(object):
 
     def __init__(self, settings=None, log=None, hypr=None):
         self.settings = settings if settings is not None else {}
-        self.log = log or (lambda message: None)   # debug level: per gesture tally
+        self.log = log or (lambda message: None)  # debug level: per gesture tally
         # Injection point for the tests: anything with the four hypr_* calls.
         self.hypr = hypr or self
         self.saved = None
         self.geometry = None
         self.address = ""
         self.centre = None
-        self.origin = None          # where the drag started, in screen coords
-        self.at = None              # where the pointer is now, tracked
+        self.origin = None  # where the drag started, in screen coords
+        self.at = None  # where the pointer is now, tracked
         self.travel_x = 0.0
         self.travel_y = 0.0
         self.active = False
@@ -1964,9 +2095,10 @@ class CursorController(object):
             return False
         if not self._edge_armed:
             return False
-        if self.hypr.now() - self._edge_at < float(
-            self.settings.get("edge_guard_cooldown_ms", 500.0)
-        ) / 1000.0:
+        if (
+            self.hypr.now() - self._edge_at
+            < float(self.settings.get("edge_guard_cooldown_ms", 500.0)) / 1000.0
+        ):
             return False
         if self._since_clutch < 1.0:
             return False
@@ -2509,8 +2641,10 @@ class PointerProxy(threading.Thread):
                     else:
                         pointer.ungrab()
                 except OSError as exc:
-                    self.complain("could not %s %s: %s"
-                                  % ("grab" if active else "release", pointer.name, exc))
+                    self.complain(
+                        "could not %s %s: %s"
+                        % ("grab" if active else "release", pointer.name, exc)
+                    )
         if active:
             self.grab_cycles += 1
 
@@ -3013,7 +3147,10 @@ class SpaceMouseDaemon(object):
         self.status_dirty = True
         self.log(
             "virtual device '%s' created%s"
-            % (DEVICE_NAME, " as %s" % self.device.sysname if self.device.sysname else "")
+            % (
+                DEVICE_NAME,
+                " as %s" % self.device.sysname if self.device.sysname else "",
+            )
         )
         if self.profile_set.settings.get("flat_acceleration", True):
             # Do this once the device exists: Hyprland only knows about it
@@ -3258,7 +3395,9 @@ class SpaceMouseDaemon(object):
             signal.signal(sig, self._on_signal)
 
         self.pointer = PointerProxy(self, self.stop_event, log=self.log)
-        self.watchdog = PointerWatchdog(self, self.pointer, self.stop_event, log=self.log)
+        self.watchdog = PointerWatchdog(
+            self, self.pointer, self.stop_event, log=self.log
+        )
         self.beat()
         self.pointer.start()
         self.watchdog.start()
