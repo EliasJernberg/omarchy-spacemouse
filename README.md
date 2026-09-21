@@ -617,6 +617,14 @@ Then, in this order, only if something is actually wrong:
 5. **It feels like it lags**: lower `smoothing_ms` to 15, or 0.
 6. **Wrong direction**: flip the `gain` sign on that axis in the gesture, or
    set `axis_invert` if you want it flipped everywhere.
+7. **Fusion starts orbiting when you only asked it to pan**: tap shift on your
+   keyboard, twice if once is not enough. Fusion latches the modifier from a
+   synthetic shift+middle drag and keeps treating the next middle drag as an
+   orbit until a shift key event resynchronises it. It is reproducible with a
+   plain middle drag right after an orbit, and it happens the same way
+   whatever order the release is emitted in, single frame included, so it is
+   not something the daemon can fix from out here. A physical shift, or any
+   real keyboard traffic, clears it.
 
 ---
 

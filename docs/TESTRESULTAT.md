@@ -584,6 +584,36 @@ Lyft av pucken (`+y`) zoomar **ut** i Fusion, tryck ner zoomar in. Känns det
 bakvänt är det ett teckenbyte på zoomgestens `gain`, samma sorts ändring som
 vridriktningen ovan.
 
+### Öppet fynd: Fusion latchar shift efter en syntetisk orbit
+
+Hygienkontrollen efter passet hittade en sak till, och den är värd att skriva
+ner även om den inte går att fixa härifrån. Efter en shift+mitten-gest tror
+Fusion att shift fortfarande är nere, så nästa rena mittendrag orbitar i
+stället för att panorera. Ett shift-tryck på tangentbordet nollställer det,
+ibland krävs två.
+
+Det viktiga: **det är inte ramfixens fel**. Samma mätning kördes med tre
+släppordningar, med rent utgångsläge verifierat före varje försök (ett rent
+mittendrag som måste panorera):
+
+```
+knappen upp, 20 ms, shift upp   (nuvarande)     latch i 1 av 1 giltiga försök
+shift upp, 20 ms, knappen upp   (före fixen)    latch i 3 av 3
+allt i en ram                   (originalet)    latch i 3 av 3
+```
+
+Alla tre latchar lika. Det är alltså ett Wine/Fusion-beteende som fanns hela
+tiden, inte en regression, och en ändrad släppordning skulle inte hjälpa. Att
+blint skicka en extra shift-tapp efter varje gest vore en dålig generell fix:
+för `alt` och `super` öppnar en ensam tapp menyer respektive launchern.
+
+Elias pass 20:34 visade inte problemet trots åtta orbit och sex pan om
+vartannat, troligen för att en hand som rör mus och tangentbord mellan
+gesterna genererar precis den trafik som synkar om Wines tangentläge.
+Reproduktion: `latch_ab.py` i sessionens scratchpad, mätt med ViewCube-masken
+och pekaren parkerad på tom yta (Fusions hover-highlight förorenar annars
+mätningen).
+
 ---
 
 ## 8. Det som återstår
