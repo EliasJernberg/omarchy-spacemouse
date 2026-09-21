@@ -61,13 +61,15 @@
     },
     {
       "name": "fusion",
-      "description": "Fusion 360 under Wine, for the SOLIDWORKS mouse preset (Preferences > General > Mouse setup): the middle button orbits, ctrl plus middle pans, shift plus middle is a continuous drag zoom, and a middle double click fits the view. That preset is what this profile assumes; on Fusion's own default preset the middle button pans instead and nothing here lines up. Zoom is a drag rather than the wheel because everything under Xwayland sees whole wheel clicks only, which made wheel zoom a staircase. Fusion picks its orbit pivot from whatever is under the pointer when the button goes down, so this profile never moves the pointer: put it on the part of the model you want to turn around, then take hold of the puck.",
+      "description": "Fusion 360 under Wine, for the SOLIDWORKS mouse preset (Preferences > General > Mouse setup): the middle button orbits, ctrl plus middle pans, shift plus middle is a continuous drag zoom, and a middle double click fits the view. That preset is what this profile assumes; on Fusion's own default preset the middle button pans instead and nothing here lines up. Zoom is a drag rather than the wheel because everything under Xwayland sees whole wheel clicks only, which made wheel zoom a staircase. One gesture at a time is the ceiling here and it is Fusion's, not the daemon's: with a button held it ignores the wheel, so zooming while orbiting is not on offer. Fusion picks its orbit pivot from whatever is under the pointer when the button goes down, so this profile never moves the pointer: put it on the part of the model you want to turn around, then take hold of the puck.",
       "match": "^fusion360\\.exe$",
       "type": "mouse",
       "cursor": "keep",
       "clutch": "off",
       "edge_guard": "off",
       "idle_release_ms": 350,
+      "wheel_speed": 12,
+      "wheel_curve": 1.0,
       "switch_hold_ms": 250,
       "dominance_ratio": 2.0,
       "fit_key": "",
@@ -119,6 +121,20 @@
             "y": {
               "to": "dy",
               "gain": 1.0
+            }
+          },
+          "when": "idle"
+        },
+        "zoom-step": {
+          "enabled": false,
+          "comment": "Off, and measured off rather than guessed. The idea was to zoom while orbiting: one pointer cannot hold two drags, but a wheel holds no buttons, so the lift would become a stepped wheel zoom on top of a running orbit or pan. Fusion will not have it. With any mouse button held it ignores wheel events completely: six clicks under an orbit and six under a pan each changed the view by 0.00 pixels, where the same six with no button held zoomed it plainly. Turn this on for an application that does accept a wheel mid-drag, most of them do.",
+          "mode": "wheel",
+          "when": "drag",
+          "speed": 1.0,
+          "axes": {
+            "y": {
+              "to": "wheel",
+              "gain": -1.0
             }
           }
         }

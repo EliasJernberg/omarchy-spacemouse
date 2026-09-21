@@ -758,7 +758,72 @@ inte drabbas av 20 ms-leaden heller).
 
 ---
 
-## 10. Det som återstår
+## 10. Nionde omgången: hybridzoomen som Fusion inte ville ha
+
+Önskemålet: kunna zooma samtidigt som man orbitar, den klassiska rörelsen.
+Planen var rimlig: en pekare kan hålla ett drag, men ett hjul håller inga
+knappar, så puckens lyft skulle bli en **stegzoom via hjulet ovanpå ett
+pågående orbit eller pan**, och en len dragzoom när den är ensam.
+
+### Mekaniken byggdes generellt
+
+`when` på en gest: `always` (default), `drag` (hjulgrupp som bara får köra
+medan ett drag pågår) och `idle` (grupp som bara får starta från viloläge och
+aldrig får ta över ett pågående drag). Dessutom två regler som kom ur
+byggandet och gäller alla profiler:
+
+- **En axel driver en sak i taget.** En hjulgrupp hålls tillbaka om det
+  pågående draget drivs av en axel de delar. Utan den regeln satte drag-zoomen
+  själv den flagga den var gated av, och samma lyft zoomade två gånger. Det
+  fångades av ett enhetstest första gången det kördes.
+- **Hjulgrupper har samma engage-hysteres som dragen** (24 counts för att
+  starta, 18 för att fortsätta). En grupp som kör under en annan gest ser den
+  gestens överhörning på sin egen axel, och utan grind skulle ett hårt vrid
+  zooma av sig självt.
+
+### Mätningen mot Fusion: hjulet ignoreras under drag
+
+```
+6 hjulklick medan orbit (mitten) hålls        vyförändring   0.00
+6 hjulklick medan pan (ctrl+mitten) hålls     vyförändring   0.00
+samma 6 hjulklick utan knapp nere             vyförändring   6393
+```
+
+**Fusion ignorerar hjulet helt så länge någon musknapp är nere.** Hybridens
+förutsättning gäller alltså i motorn men inte i applikationen. `zoom-step`
+ligger kvar i profilen med `"enabled": false` och mätningen i en kommentar, så
+nästa person slipper göra om den, och så att en applikation som *tar emot*
+hjul mitt i ett drag är en flagga bort.
+
+### Vad gatet ändå gav
+
+Drag-zoomen är `"when": "idle"`. Verifierat genom motorn mot körande Fusion:
+`ry=200` och `y=200` samtidigt loggar bara `gesture orbit holding middle`,
+orbiten behålls och lyftet stjäl den inte. Tidigare hade ett hårt lyft mitt i
+ett svagt orbit vunnit switchen (dominans 2.0 efter 250 ms) och förstört
+rörelsen. Spegelfallet är kvar som det var och det är rätt: en bestämd vridning
+får fortfarande ta över en pågående zoom, vilket ett enhetstest håller fast.
+
+### Taket, ärligt
+
+Med en pekare finns två frihetsgrader. Orbit vill ha två, pan vill ha två,
+zoom vill ha en, och Fusion tar inte emot hjul under ett drag. Alltså: **en
+navigationsgest i taget, och det gäller orbit+zoom lika mycket som orbit+pan.**
+Vägen förbi är inte en input-daemon utan en add-in på Fusions sida som talar
+med kamera-API:t direkt, samma spår som står under "Det som återstår".
+
+### Verifiering
+
+- `python3 tests/run.py`: **273 tester, alla gröna** (nio nya för gatet,
+  axelregeln, engage-hysteresen på hjul och den avstängda gesten).
+- Motorn mot körande Fusion: `ry` → orbit, `x` → pan, `y` → len dragzoom,
+  `ry`+`y` → orbit behålls. Inga hängande knappar eller modifierare efter
+  någon körning.
+- Tjänsten omstartad, vyn lämnad på Fit.
+
+---
+
+## 11. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")

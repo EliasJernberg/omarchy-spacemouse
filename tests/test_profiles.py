@@ -67,17 +67,37 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertIn("SOLIDWORKS", profile.description)
 
-    def test_fusion_zooms_by_dragging_and_not_by_the_wheel(self):
-        # Two reasons. Xwayland hands an application whole wheel clicks and
-        # nothing between them, so wheel zoom was a staircase; and the drag
-        # zoom lives on the same puck axis as the wheel did, so keeping both
-        # would drive the zoom twice from one axis. Nothing in this profile is
-        # a wheel group any more.
+    def test_fusion_zooms_by_dragging_and_never_by_the_wheel(self):
+        # Xwayland hands an application whole wheel clicks and nothing in
+        # between, so wheel zoom was a staircase, and the drag zoom is the
+        # answer. It may only start from idle: losing a running orbit because
+        # the hand also lifted would be the worst outcome of all.
         profile = self.select("fusion360.exe")
-        self.assertEqual(profile.wheel_gestures, [])
         gestures = dict((g.name, g) for g in profile.gestures)
+        self.assertEqual(profile.wheel_gestures, [], "no wheel group runs here")
         self.assertEqual(gestures["zoom"].mode, "drag")
+        self.assertEqual(gestures["zoom"].when, "idle")
         self.assertEqual(gestures["zoom"].axes["y"][0], "dy")
+
+    def test_the_stepped_zoom_is_shipped_off_with_its_reason(self):
+        # Zooming while orbiting was tried and Fusion refused: with a button
+        # held it ignores the wheel entirely. The group stays in the file,
+        # disabled and explained, so the next person does not repeat the
+        # measurement, and so an application that does accept a wheel mid-drag
+        # is one flag away.
+        with open(DEFAULT_PROFILES, encoding="utf-8") as handle:
+            spec = json.load(handle)
+        fusion = [p for p in spec["profiles"] if p["name"] == "fusion"][0]
+        step = fusion["gestures"]["zoom-step"]
+        self.assertFalse(step["enabled"])
+        self.assertEqual(step["when"], "drag")
+        self.assertEqual(step["mode"], "wheel")
+        self.assertIn("0.00 pixels", step["comment"])
+        # Both zooms have to go the same way when the puck is lifted. Measured
+        # in Fusion: dragging the pointer down zooms in, and so does wheel
+        # button 5, which is a negative detent.
+        self.assertGreater(fusion["gestures"]["zoom"]["axes"]["y"]["gain"], 0)
+        self.assertLess(step["axes"]["y"]["gain"], 0)
 
     def test_fusion_never_moves_the_pointer(self):
         # Fusion reads the pointer to pick its orbit pivot, so warping it

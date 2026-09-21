@@ -167,9 +167,25 @@ or swap the profile's `hold` lists back: orbit `["shift", "middle"]`, pan
 is worth switching. Everything under Xwayland is handed whole wheel clicks and
 nothing in between, so wheel zoom is a staircase: see [the
 wheel](#the-wheel-and-what-one-click-costs). Dragging is continuous, and it is
-the one navigation the wheel could never do smoothly here. It costs one thing:
-zoom is now a drag like the other two, so it takes its turn with them instead
-of running alongside, and the puck can no longer zoom while it orbits.
+the one navigation the wheel could never do smoothly here.
+
+It costs one thing, and the cost is Fusion's rather than the daemon's: **one
+gesture at a time**. Zoom is a drag now, and a pointer can hold one drag, so
+the puck cannot zoom while it orbits. The obvious way round is a wheel zoom on
+top of the drag, since a wheel holds no buttons, and it does not work here:
+**with any mouse button held Fusion ignores wheel events completely.** Six
+clicks under an orbit and six under a pan each moved the view by 0.00 pixels,
+where the same six with no button held zoomed it plainly. The group that would
+have done it is in the profile as `zoom-step`, shipped `"enabled": false` with
+that measurement next to it, ready for an application that does accept a wheel
+mid-drag.
+
+What the gates do buy is that **a hard lift can no longer cost you the orbit**.
+The drag zoom is `"when": "idle"`: it starts when nothing else is running and
+can never take a running gesture over, so turning the model and pulling on the
+puck at the same time keeps turning the model. Zooming and orbiting at once
+needs a second channel into Fusion's camera, which means a Fusion-side add-in,
+not an input daemon.
 
 Its FIT button is deliberately unbound, because no fit-to-view shortcut can be
 relied on under Wine. Fusion does fit on a middle double click, which the puck
@@ -289,6 +305,15 @@ the wheel.
 - `axes` maps a puck axis to `dx`, `dy`, `wheel` or `hwheel`, through a `gain`
   that also carries the sign. Flip a `gain` to reverse a direction.
 - `mode` is `drag` (default) or `wheel`.
+- `when` says when the group may run at all: `always` (the default), `drag`
+  for a wheel group that may only run while a drag is, or `idle` for a group
+  that may only start when nothing else is running. A wheel group holds no
+  buttons and runs alongside a drag, so `drag` and `idle` are what let one
+  puck axis be two different things: a smooth drag on its own and a stepped
+  wheel on top of another gesture. A group is also held back while the drag
+  that is running is driven by an axis it shares, because one axis driving the
+  same motion twice is never what anyone meant. Whether an application acts on
+  a wheel mid-drag is its own business: Fusion does not, most do.
 - `speed` scales this group only; `pointer_speed` and `wheel_speed` in
   `settings` scale every group.
 
@@ -792,7 +817,7 @@ the tally line names (`area from window` or `area from monitor`).
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 264 tests, standard library only
+python3 tests/run.py            # 273 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```
