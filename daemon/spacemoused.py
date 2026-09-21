@@ -902,6 +902,22 @@ class Gesture(object):
         self.mode = str(spec.get("mode", "drag"))  # "drag" or "wheel"
         self.speed = float(spec.get("speed", 1.0))
         self.hold = parse_combo(spec.get("hold"))
+        # When this group is allowed to run at all. "always" is the default
+        # and the only one most profiles need.
+        #
+        #   wheel group, "drag":  only while a drag is running. One axis can
+        #                         then be a smooth drag on its own and a
+        #                         stepped wheel on top of another gesture,
+        #                         which is the only way to zoom while
+        #                         orbiting when the application gives you one
+        #                         pointer and no second button to hold.
+        #   drag group,  "idle":  may start when nothing else is running, but
+        #                         may never take a running gesture over. An
+        #                         orbit is not to be lost because the hand
+        #                         also lifted.
+        self.when = str(spec.get("when", "always"))
+        if self.when not in ("always", "drag", "idle"):
+            raise ValueError("gesture '%s' has unknown when '%s'" % (name, self.when))
         self.axes = {}
         for axis, mapping in (spec.get("axes") or {}).items():
             if axis not in AXES:
@@ -914,6 +930,19 @@ class Gesture(object):
                     "gesture '%s' maps %s to unknown target '%s'" % (name, axis, target)
                 )
             self.axes[axis] = (target, float(mapping.get("gain", 1.0)))
+
+    @property
+    def can_contest(self):
+        """May this drag group take a running gesture over?"""
+        return self.when != "idle"
+
+    def allowed(self, dragging):
+        """May this group run right now, given whether a drag is running?"""
+        if self.when == "drag":
+            return dragging
+        if self.when == "idle":
+            return not dragging
+        return True
 
     def magnitude(self, norm):
         """How hard this group is being driven, 0..1-ish."""
@@ -1513,21 +1542,9 @@ class GestureEngine(object):
         ratio = profile.number("dominance_ratio", settings, 1.35)
         switch_hold = profile.number("switch_hold_ms", settings, 0.0) / 1000.0
 
-        # Wheel groups run on their own, alongside whatever drag is happening.
-        # Zooming while orbiting is what a real 3Dconnexion driver does, and
-        # the wheel holds no buttons, so there is nothing to arbitrate.
-        for gesture in self.profile.wheel_gestures:
-            if gesture.magnitude(norm) > 0.0:
-                if not self._wheel_on.get(gesture.name):
-                    self._wheel_on[gesture.name] = True
-                    self._wheel_clicks[gesture.name] = 0
-                    self._wheel_units[gesture.name] = 0
-                self._emit(gesture, norm, dt)
-            elif self._wheel_on.get(gesture.name):
-                self._end_wheel(gesture.name)
-
         drags = self.profile.drag_gestures
         if not drags:
+            self._tick_wheels(norm, dt, raw, engage)
             return
 
         magnitudes = {}
@@ -1557,6 +1574,7 @@ class GestureEngine(object):
                 self.active is not None
                 and startable
                 and best is not self.active
+                and best.can_contest
                 and best_magnitude > current * ratio
             )
             if not contested:
@@ -1582,9 +1600,55 @@ class GestureEngine(object):
         if self.active is None and startable:
             self._activate(best, now)
 
+        # Wheel groups run alongside whatever drag is happening: they hold no
+        # buttons, so there is nothing to arbitrate. They are decided after
+        # the drag, not before, because a gated group has to see whether a
+        # drag is running *this* tick, not last tick.
+        self._tick_wheels(norm, dt, raw, engage)
+
         if self.active is None:
             return
         self._emit(self.active, norm, dt)
+
+    def _tick_wheels(self, norm, dt, raw, engage):
+        """Run the wheel groups this tick, respecting each one's gate.
+
+        A group can say when it is allowed to run at all: always, only while a
+        drag is running, or only while none is. That is what lets one axis be
+        two zooms. On Fusion the puck's lift is a smooth drag zoom when it is
+        the only thing happening, and a stepped wheel zoom when it happens on
+        top of an orbit, because an orbit already holds the one pointer there
+        is and a second drag cannot be held at the same time.
+
+        The engage gate is the same hysteresis the drags use, and a wheel
+        group needs it for the same reason and more: a group that runs during
+        another gesture sees that gesture's cross-talk on its own axis, and
+        without a gate a hard twist would zoom by itself.
+        """
+        dragging = self.active is not None
+        for gesture in self.profile.wheel_gestures:
+            running = bool(self._wheel_on.get(gesture.name))
+            # An axis that is already driving the running drag is spoken for.
+            # Without this the smooth zoom, being a drag itself, would set the
+            # gate it is gated by and the same lift would zoom twice.
+            taken = dragging and bool(set(self.active.axes) & set(gesture.axes))
+            if taken or not gesture.allowed(dragging):
+                live = False
+            elif running:
+                live = gesture.magnitude(norm) > 0.0
+            else:
+                live = (
+                    gesture.magnitude(norm) > 0.0
+                    and gesture.raw_deflection(raw) >= engage
+                )
+            if live:
+                if not running:
+                    self._wheel_on[gesture.name] = True
+                    self._wheel_clicks[gesture.name] = 0
+                    self._wheel_units[gesture.name] = 0
+                self._emit(gesture, norm, dt)
+            elif running:
+                self._end_wheel(gesture.name)
 
     def _emit(self, gesture, norm, dt):
         settings = self.settings

@@ -534,9 +534,9 @@ class WheelReachTest(EngineFixture):
 
         with open(sm.os.path.join(sm.repo_root(), "profiles.default.json")) as handle:
             spec = json.load(handle)
-        fallback = [
-            p for p in spec["profiles"] if p["name"] == "bambu-mouse-fallback"
-        ][0]
+        fallback = [p for p in spec["profiles"] if p["name"] == "bambu-mouse-fallback"][
+            0
+        ]
         self.settings.update(spec["settings"])  # the shipped curve, not the fixture's
         self.settings["wheel_speed"] = 12.0
         self.use(fallback)
@@ -663,6 +663,125 @@ class WheelReachTest(EngineFixture):
         # And it does not say it twice.
         engine.release_all()
         self.assertEqual(len(lines), 1)
+
+
+class GatedGroupTest(EngineFixture):
+    """One axis, two zooms: `when` is what keeps them out of each other's way.
+
+    A pointer can hold one drag. So zooming while orbiting cannot be a second
+    drag, and the same puck axis has to be a smooth drag on its own and a
+    stepped wheel on top of another gesture. Two gates do it: the drag zoom
+    may only start from idle, and the wheel zoom may only run while a drag is.
+    """
+
+    HYBRID = {
+        "name": "hybrid",
+        "type": "mouse",
+        "match": None,
+        "wheel_speed": 12.0,
+        "gestures": {
+            "orbit": {
+                "hold": ["middle"],
+                "axes": {"rx": {"to": "dy"}, "ry": {"to": "dx"}},
+            },
+            "zoom": {
+                "hold": ["shift", "middle"],
+                "when": "idle",
+                "speed": 0.1,
+                "axes": {"y": {"to": "dy", "gain": 1.0}},
+            },
+            "zoom-step": {
+                "mode": "wheel",
+                "when": "drag",
+                "axes": {"y": {"to": "wheel", "gain": -1.0}},
+            },
+        },
+    }
+
+    def wheeled(self):
+        return sum(
+            abs(v) for c, v in rel_events(self.device) if c == sm.REL_WHEEL_HI_RES
+        )
+
+    def test_lift_alone_is_the_smooth_drag_zoom(self):
+        self.use(self.HYBRID)
+        self.tick(axes(y=300), count=6)
+        self.assertEqual(self.engine.active_name, "zoom")
+        self.assertEqual(self.held(), [SHIFT, sm.BTN_MIDDLE])
+        self.assertEqual(self.wheeled(), 0, "no wheel while it is the only gesture")
+
+    def test_lift_during_an_orbit_becomes_the_wheel_instead(self):
+        self.use(self.HYBRID)
+        self.tick(axes(ry=300), count=3)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.device.records = []
+        self.tick(axes(ry=300, y=300), count=12)
+        self.assertEqual(self.engine.active_name, "orbit", "the orbit is not lost")
+        self.assertEqual(self.held(), [sm.BTN_MIDDLE])
+        self.assertGreater(self.wheeled(), 0, "and the lift zooms by wheel")
+
+    def test_a_hard_lift_never_steals_a_running_orbit(self):
+        # The one that matters: the hand is turning the model and lifts hard
+        # to come closer. Losing the orbit there would be the worst outcome.
+        self.use(self.HYBRID)
+        self.tick(axes(ry=200), count=3)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.tick(axes(ry=60, y=350), count=40)
+        self.assertEqual(self.engine.active_name, "orbit")
+        self.assertEqual(self.held(), [sm.BTN_MIDDLE])
+
+    def test_the_smooth_zoom_still_gives_way_to_a_deliberate_turn(self):
+        # The gate is about not being stolen from, not about being immovable:
+        # a dominant orbit may still take over from a running zoom.
+        self.use(self.HYBRID)
+        self.tick(axes(y=300), count=4)
+        self.assertEqual(self.engine.active_name, "zoom")
+        self.tick(axes(y=20, ry=350), count=10)
+        self.assertEqual(self.engine.active_name, "orbit")
+
+    def test_the_wheel_is_silent_while_nothing_is_dragging(self):
+        self.use(self.HYBRID)
+        # y alone starts the drag zoom, so drive an axis no group claims.
+        spec = dict(self.HYBRID)
+        spec["gestures"] = dict(self.HYBRID["gestures"])
+        spec["gestures"].pop("zoom")
+        self.use(spec)
+        self.tick(axes(y=300), count=10)
+        self.assertEqual(self.engine.active_name, "")
+        self.assertEqual(self.wheeled(), 0, "gated to drags, and none is running")
+
+    def test_a_wheel_group_needs_the_engage_gate_to_start(self):
+        # Cross-talk: a hard twist puts something on the lift axis too, and a
+        # wheel group that ran during another gesture would zoom on its own.
+        # Same hysteresis as the drags: 24 counts to start, 18 to keep going.
+        self.use(self.HYBRID)
+        self.tick(axes(ry=300), count=3)
+        self.device.records = []
+        self.tick(axes(ry=300, y=21), count=20)
+        self.assertEqual(self.wheeled(), 0, "below the engage gate, no zoom")
+        self.tick(axes(ry=300, y=40), count=20)
+        self.assertGreater(self.wheeled(), 0)
+        self.device.records = []
+        self.tick(axes(ry=300, y=21), count=20)
+        self.assertGreater(
+            self.wheeled(), 0, "once running it holds down to the deadzone"
+        )
+
+    def test_when_is_checked_when_the_profile_is_read(self):
+        spec = dict(self.HYBRID)
+        spec["gestures"] = {"zoom": {"mode": "wheel", "when": "sometimes", "axes": {}}}
+        with self.assertRaises(ValueError):
+            sm.Profile(spec)
+
+    def test_an_ordinary_wheel_group_still_runs_whenever_it_likes(self):
+        self.use(CAD_PROFILE)
+        self.settings["wheel_speed"] = 12.0
+        self.tick(axes(y=300), count=10)
+        self.assertEqual(self.engine.active_name, "")
+        self.assertGreater(
+            sum(abs(v) for c, v in rel_events(self.device) if c == sm.REL_WHEEL_HI_RES),
+            0,
+        )
 
 
 class ModifierOrderTest(EngineFixture):
