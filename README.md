@@ -164,7 +164,8 @@ the pointer at all:
 "edge_guard": "off",       // and no warp at the window edge either
 "idle_release_ms": 350,    // a pause must not release the button
 "switch_hold_ms": 250,     // nor may a wobble swap orbit for pan
-"dominance_ratio": 2.0
+"dominance_ratio": 2.0,
+"wheel_speed": 12          // Wine only sees whole wheel clicks
 ```
 
 **In practice: put the pointer on the part of the model you want to turn
@@ -315,6 +316,48 @@ ignores a modifier from a gesture that never started:
 ```
 omarchy-spacemouse: gesture orbit holding shift+middle
 omarchy-spacemouse: gesture cursor: 0 warp(s), 0 clutch(es), 0 edge clutch(es), area from window
+```
+
+### The wheel, and what one click costs
+
+A wheel gesture is emitted as a high resolution stream: `REL_WHEEL_HI_RES`
+carries 120 units per click, and the accumulator hands out whatever fraction
+the deflection earned this tick. A browser acts on every one of those units,
+which is why zooming a Three.js viewer feels continuous.
+
+**Everything on Xwayland acts on whole clicks only.** libinput and the
+compositor pass the units along, Xwayland adds them up, and only when they
+reach 120 does an X client see a button 4 or 5 at all. So the two consumers
+need very different amounts of the same stream, and the number that decides it
+is `wheel_speed` (detents per second at full deflection).
+
+Measured, with a comfortable half deflection and a 0.4 s push, which is what a
+hand actually does:
+
+| `wheel_speed` | units emitted | wheel clicks the X client got | Fusion |
+|---------------|---------------|-------------------------------|--------|
+| 3 (the global default) | 40 | **0** | nothing at all, 0.00 pixels changed |
+| 12 (the Fusion profile) | 160 | 1 | zooms |
+
+That is why Fusion's zoom did nothing while the identical emission zoomed
+Sketchfab happily, and why the Fusion profile carries `"wheel_speed": 12`. Any
+profile for an application that only understands clicks wants the same. The
+global 3.0 stays where it is, because that is the number the browser profile
+was tuned to by hand.
+
+One related trap is handled rather than exposed: `wheel_hi_res: false` used to
+emit plain `REL_WHEEL` and nothing else, and plain `REL_WHEEL` scrolls nothing
+whatsoever. The device declares `REL_WHEEL_HI_RES`, and libinput then takes
+the wheel from that axis alone and ignores the classic one. The setting now
+means what it says, whole clicks instead of a smooth stream, and every click
+still carries its 120 units.
+
+`-v` says what the wheel delivered, which is the difference between a gesture
+that never ran and one that ran and could not reach a click:
+
+```
+omarchy-spacemouse: gesture zoom scrolled 4 click(s), 512 unit(s) of 120
+omarchy-spacemouse: gesture zoom scrolled 0 click(s), 40 unit(s) of 120
 ```
 
 ### What happens to the mouse pointer
@@ -525,8 +568,8 @@ Everything in `settings` applies to every profile:
 | `axis_gain`          | all 1.0 | per-axis multiplier.                                              |
 | `axis_invert`        | all false | per-axis direction flip.                                        |
 | `pointer_speed`      | 900     | pixels per second at full deflection.                             |
-| `wheel_speed`        | 3.0     | wheel detents per second at full deflection.                      |
-| `wheel_hi_res`       | true    | emit `REL_WHEEL_HI_RES` for smooth scrolling.                     |
+| `wheel_speed`        | 3.0     | wheel detents per second at full deflection. A click-only application wants far more, see [the wheel](#the-wheel-and-what-one-click-costs). |
+| `wheel_hi_res`       | true    | smooth scrolling. False emits whole clicks only (still 120 units each). |
 | `smoothing_ms`       | 30      | exponential average on the axes. 0 turns it off.                  |
 | `idle_release_ms`    | 80      | how long it keeps the buttons after you let go.                   |
 | `dominance_ratio`    | 1.35    | how much stronger a competing group must be to take over.         |
@@ -564,7 +607,11 @@ Then, in this order, only if something is actually wrong:
 1. **Drift at rest**: watch `spacemoused.py --dump` with your hand off the puck.
    Put `deadzone` just above the largest number you see, and `engage_deadzone`
    about 6 counts above that.
-2. **Zoom too slow or too fast**: `wheel_speed`, in detents per second.
+2. **Zoom too slow or too fast**: `wheel_speed`, in detents per second. If it
+   does nothing at all in an application running under Wine or Xwayland, it is
+   almost certainly too low rather than broken: see [the
+   wheel](#the-wheel-and-what-one-click-costs), and check with `-v`, which
+   prints the clicks and the units each scroll delivered.
 3. **A gesture keeps flipping to another**: raise `dominance_ratio`.
 4. **The gesture drops out mid-move**: raise `idle_release_ms`.
 5. **It feels like it lags**: lower `smoothing_ms` to 15, or 0.
@@ -677,7 +724,7 @@ the tally line names (`area from window` or `area from monitor`).
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 250 tests, standard library only
+python3 tests/run.py            # 259 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```
@@ -740,6 +787,19 @@ python3 tests/live_modifier.py --profile default --gesture pan
 
 It needs a quiet machine: if the probe loses the focus mid-gesture, the events
 went somewhere else and the run says so instead of failing the daemon for it.
+
+`tests/live_wheel.py` asks the other half of that question, about the wheel:
+how much of a push survives as far as a whole click?
+
+```bash
+python3 tests/live_wheel.py                          # the fusion profile
+python3 tests/live_wheel.py --wheel-speed 3          # what it looked like broken
+python3 tests/live_wheel.py --profile browser-threejs --deflection 350
+```
+
+It prints the units the engine emitted against the clicks the client received,
+and fails when a real push cannot reach a single click, which is the shape of
+a zoom that does nothing in a Wine application while working everywhere else.
 
 ### Checking the directions in a browser
 

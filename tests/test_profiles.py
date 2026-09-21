@@ -89,6 +89,16 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertEqual(browser["orbit"].axes["ry"], ("dx", -1.0))
 
+    def test_fusion_zooms_in_whole_clicks_a_wine_app_can_see(self):
+        # Everything on Xwayland acts on whole wheel clicks, and a click is
+        # 120 high resolution units. At the global wheel_speed a comfortable
+        # half-second push never reaches one, so Fusion was handed nothing at
+        # all while the same emission zoomed a browser smoothly.
+        profile = self.select("fusion360.exe")
+        self.assertGreaterEqual(
+            profile.number("wheel_speed", self.profiles.settings), 12.0
+        )
+
     def test_fusion_is_patient(self):
         profile = self.select("fusion360.exe")
         settings = self.profiles.settings

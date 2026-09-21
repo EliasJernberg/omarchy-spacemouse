@@ -495,7 +495,98 @@ pekar-arbitrering och en till sak som kan fastna, utan att lösa något.
 
 ---
 
-## 7. Det som återstår
+## 7. Sjätte omgången: vridriktning och en zoom som inte fanns
+
+Elias känselpass 2026-09-21 20:34 med ramfixen inne: orbit och pan registreras
+friskt i journalen (`gesture orbit holding shift+middle`, `gesture pan holding
+middle`), mekaniken sitter. Två saker kvar: vridningen gick åt fel håll, och
+zoom via lyft/tryck gjorde ingenting.
+
+### Vridriktningen
+
+Ren smaksak som bara handen kan avgöra, och handen sa spegelvänt.
+`ry → dx`-gainen i fusion-profilens orbit är nu `+1.0` i stället för `-1.0`, i
+både `profiles.default.json` och Elias live-config. `rx` (tippningen) är orörd,
+den klagade han inte på, och `browser-threejs` behåller `-1.0`: Fusion snurrar
+kameran runt en pivot medan en Three.js-vy drar i modellen, så samma puckaxel
+kräver verkligen olika tecken i de två profilerna. Tecknet är nu fastnaglat i
+`test_profiles.py` så en städning inte byter tillbaka det i tysthet.
+
+### Zoomen: hjulet fanns, men nådde aldrig ett helt klick
+
+Stegvis, med proben från förra omgången utbyggd till att räkna knapp 4 och 5
+(X-hjulet är knapptryck 4 upp och 5 ner):
+
+**(a) Gesten fajrar.** 1,5 s med `y=300` genom den riktiga gestmotorn gav 176
+`wheel()`-anrop och 427 hi-res-enheter. Inga trösklar stoppade något.
+
+**(b) Eventen når fram.** Samma körning gav X-klienten 4 tryck på knapp 4, och
+mot körande Fusion zoomade vyn. Transporten genom libinput, Hyprland och
+Xwayland är alltså hel.
+
+**(c) Men takten räcker inte, och det är hela buggen.** Ett klick är 120
+hi-res-enheter, och **allt som kör på Xwayland reagerar bara på hela klick**.
+En webbläsare reagerar på varje enskild enhet, vilket är varför exakt samma
+emission kändes bra i Sketchfab 18/9. Med bekvämt halvutslag och en normal kort
+tryckning, alltså det handen faktiskt gör:
+
+```
+0,4 s vid y=150, wheel_speed 3 (globala)    40 enheter    0 klick    Fusion: 0.00 px ändrade
+0,4 s vid y=150, wheel_speed 12 (nya)      160 enheter    1 klick    Fusion: zoomar
+0,3 s vid y=120, wheel_speed 3               20 enheter    0 klick
+0,5 s vid y=350, wheel_speed 12             678 enheter    5 klick
+```
+
+Noll klick betyder att Fusion inte fick ett enda event. Inte en långsam zoom:
+ingen zoom. Fusion-profilen har därför `"wheel_speed": 12`, mätt så att en kort
+halvtryckning ger ett klick och fullt utslag ger tio i sekunden. Globala 3.0
+står kvar, det är siffran webbläsarprofilen trimmades till för hand.
+
+### En riktig emissionsbugg på köpet
+
+`wheel_hi_res: false` emitterade bara klassiska `REL_WHEEL` och inget annat, och
+**klassiska hjulevent scrollar ingenting alls**: enheten deklarerar
+`REL_WHEEL_HI_RES`, och libinput tar då hjulet från den axeln och ignorerar den
+klassiska. Mätt mot Fusion: fem klassiska detents flyttade vyn `0.00` pixlar,
+samma fem med 120 enheter var zoomade den. Inställningen betyder nu det den
+säger, hela klick i stället för ett mjukt flöde, och varje klick bär sina 120
+enheter.
+
+### Hjulet syns i loggen nu
+
+`-v` sa ingenting alls om hjulgester, vilket är precis den information som
+saknades för att svara på "fajrade zoomen?". Nu:
+
+```
+omarchy-spacemouse: gesture zoom scrolled 4 click(s), 512 unit(s) of 120
+omarchy-spacemouse: gesture zoom scrolled 0 click(s), 40 unit(s) of 120
+```
+
+Den andra raden är felläget, direkt läsbart: gesten körde och nådde aldrig ett
+klick. En axel som bara snuddar dödzonen loggar inget, annars skulle raden
+dränka loggen den ska förklara.
+
+### Verifiering
+
+- `python3 tests/run.py`: **259 tester, alla gröna** (250 plus 9 nya: klick-
+  takten vid tre och tolv, profilens egen `wheel_speed`, den skickade
+  fusion-profilen mot en kort tryckning, loggraderna, dödzonssnuddningen,
+  klassiskt läge som bär hi-res, samt teckenlåsen för vridriktningen).
+- Samma tryckning mot körande Fusion före och efter: `wheel_speed 3` ger
+  `0.00` i vyförändring, `wheel_speed 12` ger 4475. Samma skript, samma
+  sekund, enda skillnaden är talet.
+- Orbit efter teckenbytet: 4 av 4 mot körande Fusion, ingen regression.
+- Replay genom hela daemonprocessen i egen `XDG_RUNTIME_DIR`: hjulraderna
+  loggas, tjänstens `control.sock` överlevde.
+- Tjänsten omstartad, status friskt.
+
+Lyft av pucken (`+y`) zoomar **ut** i Fusion, tryck ner zoomar in. Känns det
+bakvänt är det ett teckenbyte på zoomgestens `gain`, samma sorts ändring som
+vridriktningen ovan.
+
+---
+
+## 8. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")

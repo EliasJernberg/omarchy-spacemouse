@@ -1249,6 +1249,15 @@ class GestureEngine(object):
         self._detent = {"wheel": 0.0, "hwheel": 0.0}
         self._smoothed = dict((axis, 0.0) for axis in AXES)
         self._switch_candidate = None
+        # Per wheel group: whether it is scrolling right now, and what it has
+        # delivered since it started. Both numbers are logged when it stops,
+        # because "0 clicks out of 40 units" is the one shape that looks like
+        # a wheel doing nothing at all and is really a wheel too slow to
+        # reach a whole click. An application that only understands clicks,
+        # which is everything on Xwayland, sees exactly nothing then.
+        self._wheel_on = {}
+        self._wheel_clicks = {}
+        self._wheel_units = {}
         self._key_next = {}
         self._key_held = {}
         self._children = []  # exec actions, kept so they can be reaped
@@ -1272,6 +1281,8 @@ class GestureEngine(object):
         """Drop the active gesture and every key the device is holding."""
         had_gesture = self.active is not None
         self.active = None
+        for name in list(self._wheel_on):
+            self._end_wheel(name)
         self._key_next = {}
         self._key_held = {}
         try:
@@ -1293,6 +1304,20 @@ class GestureEngine(object):
     def modifier_lead(self):
         """Seconds between a gesture's modifiers and its button."""
         return self.profile.number("modifier_lead_ms", self.settings, 20.0) / 1000.0
+
+    def _end_wheel(self, name):
+        """Close a wheel group's run and say what it managed to deliver."""
+        if not self._wheel_on.pop(name, False):
+            return
+        clicks = self._wheel_clicks.pop(name, 0)
+        units = self._wheel_units.pop(name, 0)
+        if not units and not clicks:
+            # The axis brushed the deadzone and delivered nothing at all.
+            # Saying so at 120 Hz would drown the log it is meant to explain.
+            return
+        self.log(
+            "gesture %s scrolled %d click(s), %d unit(s) of 120" % (name, clicks, units)
+        )
 
     def _press(self, gesture):
         """Put the combo down: the modifiers first, in a frame of their own.
@@ -1475,7 +1500,13 @@ class GestureEngine(object):
         # the wheel holds no buttons, so there is nothing to arbitrate.
         for gesture in self.profile.wheel_gestures:
             if gesture.magnitude(norm) > 0.0:
+                if not self._wheel_on.get(gesture.name):
+                    self._wheel_on[gesture.name] = True
+                    self._wheel_clicks[gesture.name] = 0
+                    self._wheel_units[gesture.name] = 0
                 self._emit(gesture, norm, dt)
+            elif self._wheel_on.get(gesture.name):
+                self._end_wheel(gesture.name)
 
         drags = self.profile.drag_gestures
         if not drags:
@@ -1594,11 +1625,28 @@ class GestureEngine(object):
                 while self._detent[target] <= -120.0:
                     self._detent[target] += 120.0
                     clicks -= 1
+            if clicks or units:
+                self._wheel_clicks[gesture.name] = self._wheel_clicks.get(
+                    gesture.name, 0
+                ) + abs(clicks)
+                self._wheel_units[gesture.name] = self._wheel_units.get(
+                    gesture.name, 0
+                ) + abs(units)
             if units and hi_res_enabled:
                 self.device.wheel(detents=clicks, hi_res=units, horizontal=horizontal)
                 moved = True
             elif clicks:
-                self.device.wheel(detents=clicks, horizontal=horizontal)
+                # Whole clicks only, but they still carry the high resolution
+                # axis. The device declares REL_WHEEL_HI_RES, and libinput
+                # then takes the wheel from that axis alone and ignores plain
+                # REL_WHEEL: a classic-only frame scrolls nothing whatsoever,
+                # which is what wheel_hi_res: false used to produce. Measured
+                # against Fusion: five classic detents moved the view by
+                # exactly zero pixels, the same five carrying 120 units each
+                # zoomed it.
+                self.device.wheel(
+                    detents=clicks, hi_res=clicks * 120, horizontal=horizontal
+                )
                 moved = True
         if moved:
             self.device.syn()

@@ -326,14 +326,22 @@ class MotionTest(EngineFixture):
         rel = rel_events(self.device)
         self.assertLess(sum(v for c, v in rel if c == sm.REL_WHEEL_HI_RES), 0)
 
-    def test_legacy_wheel_only_when_high_resolution_is_off(self):
+    def test_with_high_resolution_off_only_whole_clicks_go_out(self):
+        # And they still carry their 120 units each. The device declares
+        # REL_WHEEL_HI_RES, and libinput then reads the wheel from that axis
+        # alone and drops plain REL_WHEEL, so a classic-only frame scrolls
+        # nothing at all: five such detents moved Fusion by zero pixels.
+        # What wheel_hi_res: false buys is whole clicks instead of a smooth
+        # stream, not a different event.
         self.use(CAD_PROFILE)
         self.settings["wheel_speed"] = 12.0
         self.settings["wheel_hi_res"] = False
         self.tick(axes(y=350), count=30)
         rel = rel_events(self.device)
-        self.assertEqual([v for c, v in rel if c == sm.REL_WHEEL_HI_RES], [])
-        self.assertGreater(sum(v for c, v in rel if c == sm.REL_WHEEL), 0)
+        detents = [v for c, v in rel if c == sm.REL_WHEEL]
+        units = [v for c, v in rel if c == sm.REL_WHEEL_HI_RES]
+        self.assertGreater(sum(detents), 0)
+        self.assertEqual(units, [120 * detent for detent in detents])
 
 
 class ButtonTest(EngineFixture):
@@ -466,6 +474,127 @@ class KeysProfileTest(EngineFixture):
         self.assertEqual(self.held(), [SHIFT])
         self.use(CAD_PROFILE)
         self.assertEqual(self.held(), [])
+
+
+class WheelReachTest(EngineFixture):
+    """What the wheel actually delivers, and to whom.
+
+    A smooth-scrolling consumer acts on every high resolution unit. Everything
+    on Xwayland acts on whole clicks only, and a click is 120 units, so the
+    same emission that zooms a browser can reach Wine as literally nothing.
+    That is what happened to Fusion's zoom, and these are the numbers.
+    """
+
+    ZOOM = {
+        "name": "zoomer",
+        "type": "mouse",
+        "match": None,
+        "gestures": {
+            "zoom": {"mode": "wheel", "axes": {"y": {"to": "wheel", "gain": 1.0}}},
+        },
+    }
+
+    def clicks(self):
+        return sum(abs(v) for c, v in rel_events(self.device) if c == sm.REL_WHEEL)
+
+    def units(self):
+        return sum(
+            abs(v) for c, v in rel_events(self.device) if c == sm.REL_WHEEL_HI_RES
+        )
+
+    def test_a_short_push_at_wheel_speed_three_is_not_one_whole_click(self):
+        # 0.4 s at a comfortable deflection, which is what a hand actually
+        # does. The units add up and never reach 120, so a click consumer is
+        # handed nothing at all while a browser zooms smoothly.
+        self.use(self.ZOOM)
+        self.settings["wheel_speed"] = 3.0
+        self.tick(axes(y=150), dt=1 / 120.0, count=48)
+        self.assertEqual(self.clicks(), 0)
+        self.assertGreater(self.units(), 0)
+
+    def test_the_same_push_at_twelve_reaches_a_click(self):
+        self.use(self.ZOOM)
+        self.settings["wheel_speed"] = 12.0
+        self.tick(axes(y=150), dt=1 / 120.0, count=48)
+        self.assertGreaterEqual(self.clicks(), 1)
+
+    def test_a_profile_may_set_its_own_wheel_speed(self):
+        spec = dict(self.ZOOM)
+        spec["wheel_speed"] = 12.0
+        self.use(spec)
+        self.settings["wheel_speed"] = 3.0
+        self.tick(axes(y=150), dt=1 / 120.0, count=48)
+        self.assertGreaterEqual(self.clicks(), 1)
+
+    def test_the_shipped_fusion_profile_reaches_a_click_on_a_short_push(self):
+        import json
+
+        with open(sm.os.path.join(sm.repo_root(), "profiles.default.json")) as handle:
+            spec = json.load(handle)
+        fusion = [p for p in spec["profiles"] if p["name"] == "fusion"][0]
+        self.settings.update(spec["settings"])  # the shipped curve, not the fixture's
+        self.use(fusion)
+        self.tick(axes(y=150), dt=1 / 120.0, count=48)
+        self.assertGreaterEqual(self.clicks(), 1)
+
+    def test_scrolling_is_logged_with_both_numbers(self):
+        lines = []
+        engine = sm.GestureEngine(
+            self.device,
+            self.settings,
+            clock=self.clock,
+            sleep=self.sleep,
+            log=lines.append,
+        )
+        self.settings["wheel_speed"] = 12.0
+        engine.set_profile(sm.Profile(self.ZOOM))
+        for _ in range(48):
+            self.clock.advance(1 / 120.0)
+            engine.tick(axes(y=150), 1 / 120.0)
+        self.assertEqual(lines, [], "nothing is said while it is still scrolling")
+        for _ in range(3):
+            self.clock.advance(1 / 120.0)
+            engine.tick(axes(), 1 / 120.0)
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r"^gesture zoom scrolled \d+ click\(s\), \d+ unit")
+
+    def test_a_brush_against_the_deadzone_is_not_worth_a_line(self):
+        lines = []
+        engine = sm.GestureEngine(
+            self.device,
+            self.settings,
+            clock=self.clock,
+            sleep=self.sleep,
+            log=lines.append,
+        )
+        engine.set_profile(sm.Profile(self.ZOOM))
+        # Just past the deadzone for a single tick: nothing is delivered, and
+        # at 120 Hz saying so would drown the log it is meant to explain.
+        self.clock.advance(1 / 120.0)
+        engine.tick(axes(y=19), 1 / 120.0)
+        self.clock.advance(1 / 120.0)
+        engine.tick(axes(), 1 / 120.0)
+        self.assertEqual(lines, [])
+
+    def test_release_all_closes_an_open_scroll(self):
+        lines = []
+        engine = sm.GestureEngine(
+            self.device,
+            self.settings,
+            clock=self.clock,
+            sleep=self.sleep,
+            log=lines.append,
+        )
+        engine.set_profile(sm.Profile(self.ZOOM))
+        for _ in range(10):
+            self.clock.advance(1 / 120.0)
+            engine.tick(axes(y=350), 1 / 120.0)
+        engine.release_all()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("gesture zoom scrolled", lines[0])
+        # And it does not say it twice.
+        engine.release_all()
+        self.assertEqual(len(lines), 1)
 
 
 class ModifierOrderTest(EngineFixture):
