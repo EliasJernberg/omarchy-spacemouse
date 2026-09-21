@@ -69,6 +69,7 @@
       "edge_guard": "off",
       "idle_release_ms": 350,
       "wheel_speed": 12,
+      "wheel_curve": 1.0,
       "switch_hold_ms": 250,
       "dominance_ratio": 2.0,
       "fit_key": "",

@@ -616,7 +616,73 @@ mätningen).
 
 ---
 
-## 8. Det som återstår
+## 8. Sjunde omgången: zoomriktning och hur len hjulvägen kan bli
+
+Elias pass 3: zoomen var spegelvänd och "inte alls smooth".
+
+### Riktningen
+
+`y → wheel`-gainen i fusion-profilens zoom är nu `-1.0`. **Lyft av pucken
+zoomar in, tryck ner zoomar ut**, tvärtemot förra rundan. Verifierat mot
+körande Fusion: knapp 5 i stället för knapp 4 ut på tråden, och modellen växer
+i bild vid lyft.
+
+### Smoothness: tre vägar undersökta
+
+**(a) Drag-zoom i Fusion.** Skulle lösa problemet i grunden, men kräver ett
+presetbyte. Fusions default-preset har ingen drag-zoom: uppmätt mot körande
+Fusion panorerar `mitten`, `ctrl+mitten`, `alt+mitten` och `ctrl+shift+mitten`
+allihop, `shift+mitten` orbitar, och hjulet zoomar. Installationen innehåller
+preferensen `PanZoomOrbitShortcuts` med presets Fusion360, Alias, Inventor,
+SolidWorks, Tinkercad och PowerMill, och Elias har aldrig ändrat den (den står
+inte i `NGlobalOptions.xml`, alltså default). **Inte implementerat**, eftersom
+ett byte flyttar hans fysiska mus samtidigt: se rapportens beslutspunkt.
+
+**(b) Jämnare kadens i daemonen.** Mätt mot en riktig X-klient: klicken kommer
+redan helt jämnt, 338 ms, 210 ms respektive 153 ms mellan klick beroende på
+utslag, med 3 ms jitter eller mindre. Det fanns inga skurar att jämna ut. (Ett
+par körningar såg skurartade ut tills mätningen började kasta pass där proben
+tappade fokus mitt i, alltså där klicken gick till ett annat fönster.)
+
+**(c) Det som faktiskt gick att förbättra: den mjuka halvan av utslaget.**
+Pekaren sparar sina bråkdelar av en pixel, hjulet kan inte röra sig en bråkdel
+av ett klick. Därför är just det område där pekaren kryper det område där
+hjulet inte gör någonting alls på en sekund. `wheel_curve` ger hjulgrupper en
+egen responskurva, default den globala `curve`, och fusion-profilen sätter
+1.0:
+
+```
+utslag 100 (mjukt)   1.9 -> 3.0 klick/s
+utslag 150           3.6 -> 4.8
+utslag 200           5.5 -> 6.6
+utslag 350 (fullt)  12.0 -> 12.0   (toppen orörd)
+```
+
+Uppmätt efter ändringen mot X-klienten: 3.0 klick/s vid utslag 100, gap 338 ms
+± 0 ms. Webbläsarprofilen behåller den globala kurvan, den konsumerar varje
+enhet och har ingen död zon att lyfta.
+
+**Vad som inte går att fixa härifrån:** zoomsteget per klick är Fusions eget
+och finns inte som inställning (genomsökt installationens option-id:n:
+`zoomScale`, `isZoomDirectionReversed` och `reverseZoomDirection` finns, men
+inget steg eller känslighet). På hjulvägen är alltså zoomhastighet och
+jämnhet samma ratt: enda sättet att få stegen tätare är att zooma snabbare.
+`wheel_speed` står kvar på 12, eftersom en 0,6-sekunders halvtryckning redan
+tar vyn från översikt till närbild.
+
+### Verifiering
+
+- `python3 tests/run.py`: **265 tester, alla gröna** (259 plus 6 nya för
+  kurvan, att fullt utslag är oförändrat, `reshape`, jämna mellanrum, samt
+  riktnings- och kurvlåsen i profiltesterna).
+- Kadens mot X-klient efter ändringen: 338 ± 0 ms vid mjukt utslag, 153 ± 2 ms
+  vid hårt.
+- Zoomriktning och zoomeffekt verifierad mot körande Fusion, före/efter-bilder.
+- Tjänsten omstartad, status friskt.
+
+---
+
+## 9. Det som återstår
 
 Uinput-regeln är **inlagd och verifierad**: `/dev/uinput` är `crw-rw---- root uucp`,
 den virtuella enheten dyker upp som `/dev/input/event26` ("Omarchy SpaceMouse")

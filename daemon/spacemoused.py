@@ -81,6 +81,7 @@ PROFILE_OVERRIDABLE = (
     "idle_release_ms",
     "switch_hold_ms",
     "modifier_lead_ms",
+    "wheel_curve",
     "dominance_ratio",
     "pointer_speed",
     "wheel_speed",
@@ -1206,6 +1207,23 @@ def normalize_axes(raw, settings):
     return out
 
 
+def reshape(value, curve, wanted):
+    """Re-apply a normalized value under a different response curve.
+
+    normalize_axes raises the deflection to `curve`, so undoing that exponent
+    and applying another one gives what the other curve would have produced.
+    A wheel wants a different one from the pointer: a pointer can move by a
+    fraction of a pixel and the accumulator keeps the rest, but a wheel cannot
+    move by a fraction of a click, so the range where the pointer merely
+    crawls is the range where the wheel does nothing at all for a second at a
+    time. Straightening the wheel's curve gives the gentle half of the puck's
+    travel a usable click rate without touching the top of it.
+    """
+    if value == 0.0 or wanted == curve or curve <= 0.0:
+        return value
+    return math.copysign(abs(value) ** (wanted / curve), value)
+
+
 # ---------------------------------------------------------------------------
 # gesture engine
 # ---------------------------------------------------------------------------
@@ -1572,6 +1590,8 @@ class GestureEngine(object):
         settings = self.settings
         pointer_speed = self.profile.number("pointer_speed", settings, 900.0)
         wheel_speed = self.profile.number("wheel_speed", settings, 3.0)
+        curve = float(settings.get("curve", 1.3))
+        wheel_curve = self.profile.number("wheel_curve", settings, curve)
         hi_res_enabled = bool(settings.get("wheel_hi_res", True))
         dx = 0.0
         dy = 0.0
@@ -1585,6 +1605,7 @@ class GestureEngine(object):
             elif target == "dy":
                 dy += value * pointer_speed * gesture.speed * dt
             else:
+                value = reshape(value, curve, wheel_curve)
                 wheel[target] += value * wheel_speed * gesture.speed * dt
 
         moved = False

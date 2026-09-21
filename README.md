@@ -165,7 +165,8 @@ the pointer at all:
 "idle_release_ms": 350,    // a pause must not release the button
 "switch_hold_ms": 250,     // nor may a wobble swap orbit for pan
 "dominance_ratio": 2.0,
-"wheel_speed": 12          // Wine only sees whole wheel clicks
+"wheel_speed": 12,         // Wine only sees whole wheel clicks
+"wheel_curve": 1.0         // and a gentle push has to earn one
 ```
 
 **In practice: put the pointer on the part of the model you want to turn
@@ -351,6 +352,31 @@ whatsoever. The device declares `REL_WHEEL_HI_RES`, and libinput then takes
 the wheel from that axis alone and ignores the classic one. The setting now
 means what it says, whole clicks instead of a smooth stream, and every click
 still carries its 120 units.
+
+The clicks themselves come out evenly: measured at an X client, a steady push
+delivers one every 338 ms, 210 ms or 153 ms depending on how hard the puck is
+held, with a jitter of 3 ms or less. There is nothing bursty in here to smooth
+out. What is left is Fusion's own step per click, which is fixed, so on the
+wheel path zoom speed and smoothness are the same dial: the only way to make
+the steps land closer together is to make the zoom go faster.
+
+What can be helped is the gentle half of the travel. The pointer keeps its
+fractions of a pixel, a wheel cannot move by a fraction of a click, so the
+range where the pointer merely crawls is the range where the wheel does
+nothing at all for a second at a time. `wheel_curve` gives a wheel group its
+own response curve, defaulting to the global `curve`. The Fusion profile sets
+it to 1.0, which lifts a gentle push from 1.9 to 3.0 clicks a second and
+leaves full deflection exactly where it was:
+
+| push (raw counts) | clicks/s at `curve` 1.3 | at `wheel_curve` 1.0 |
+|-------------------|-------------------------|----------------------|
+| 100 (gentle)      | 1.9                     | 3.0                  |
+| 150               | 3.6                     | 4.8                  |
+| 200               | 5.5                     | 6.6                  |
+| 350 (full)        | 12.0                    | 12.0                 |
+
+A browser consumes every unit rather than whole clicks, so its profile keeps
+the global curve: there is no dead range there to lift.
 
 `-v` says what the wheel delivered, which is the difference between a gesture
 that never ran and one that ran and could not reach a click:
@@ -583,12 +609,14 @@ Everything in `settings` applies to every profile:
 | `edge_guard_cooldown_ms` | 500 | the edge guard may not fire more often than this.                 |
 | `switch_hold_ms`     | 0       | how long a competitor must stay dominant before taking over.      |
 | `modifier_lead_ms`   | 20      | how long a gesture's modifiers are held before its button goes down. |
+| `wheel_curve`        | `curve` | response curve for wheel groups only. Straighter means a usable click rate at gentle deflection. |
 | `activate_threshold` | 0.0     | extra gate on the normalized magnitude. Normally left at zero.    |
 | `release_threshold`  | 0.0     | same, for keeping a gesture alive.                                |
 
 Any profile can set these for itself, and the profile's value wins:
-`idle_release_ms`, `switch_hold_ms`, `modifier_lead_ms`, `dominance_ratio`,
-`pointer_speed`, `wheel_speed`, `smoothing_ms`, `clutch_fraction`,
+`idle_release_ms`, `switch_hold_ms`, `modifier_lead_ms`, `wheel_curve`,
+`dominance_ratio`, `pointer_speed`, `wheel_speed`, `smoothing_ms`,
+`clutch_fraction`,
 `engage_deadzone`, `deadzone`, `curve`, `sensitivity`, plus the `cursor` and
 `clutch` policies.
 An application's feel is its own business.
@@ -732,7 +760,7 @@ the tally line names (`area from window` or `area from monitor`).
 ## Working on it
 
 ```bash
-python3 tests/run.py            # 259 tests, standard library only
+python3 tests/run.py            # 265 tests, standard library only
 python3 tests/run.py -v
 python3 tests/run.py gesture    # just tests/test_gestures.py
 ```

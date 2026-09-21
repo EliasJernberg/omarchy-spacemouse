@@ -558,6 +558,68 @@ class WheelReachTest(EngineFixture):
         self.assertEqual(len(lines), 1)
         self.assertRegex(lines[0], r"^gesture zoom scrolled \d+ click\(s\), \d+ unit")
 
+    def test_the_wheel_can_have_a_gentler_curve_than_the_pointer(self):
+        # The pointer keeps its fractions and the wheel cannot: below a click
+        # a wheel does nothing at all, so the range where the pointer merely
+        # crawls is the range where the wheel is dead. A straighter curve for
+        # the wheel alone lifts that range without touching full deflection.
+        self.settings["curve"] = 1.3
+        self.settings["wheel_speed"] = 12.0
+        spec = dict(self.ZOOM)
+        self.use(spec)
+        self.tick(axes(y=100), dt=1 / 120.0, count=240)
+        steep = self.clicks()
+        self.setUp()
+        self.settings["curve"] = 1.3
+        self.settings["wheel_speed"] = 12.0
+        spec = dict(self.ZOOM)
+        spec["wheel_curve"] = 1.0
+        self.use(spec)
+        self.tick(axes(y=100), dt=1 / 120.0, count=240)
+        self.assertGreater(self.clicks(), steep)
+
+    def test_full_deflection_is_the_same_whatever_the_wheel_curve(self):
+        # The curve may only change the shape of the travel, not its end.
+        counts = []
+        for wheel_curve in (1.3, 1.0):
+            self.setUp()
+            self.settings["curve"] = 1.3
+            self.settings["wheel_speed"] = 12.0
+            spec = dict(self.ZOOM)
+            spec["wheel_curve"] = wheel_curve
+            self.use(spec)
+            self.tick(axes(y=350), dt=1 / 120.0, count=240)
+            counts.append(self.clicks())
+        self.assertEqual(counts[0], counts[1])
+
+    def test_reshape_undoes_one_curve_and_applies_another(self):
+        # 0.3 under curve 1.3 came from a deflection of 0.3 ** (1/1.3), and
+        # that deflection under curve 1.0 is itself.
+        self.assertAlmostEqual(sm.reshape(0.3, 1.3, 1.0), 0.3 ** (1 / 1.3), places=6)
+        self.assertEqual(sm.reshape(0.4, 1.3, 1.3), 0.4, "same curve, same value")
+        self.assertEqual(sm.reshape(0.0, 1.3, 1.0), 0.0)
+        self.assertLess(sm.reshape(-0.3, 1.3, 1.0), 0, "the sign survives")
+        self.assertAlmostEqual(sm.reshape(1.0, 1.3, 1.0), 1.0, places=9)
+
+    def test_the_clicks_come_out_evenly_spaced(self):
+        # Measured against a real X client at 338 ms, 210 ms and 153 ms per
+        # click with a jitter of 3 ms or less. This is the same property in
+        # the fake: with a steady deflection the gaps between clicks are
+        # constant, so there is nothing bursty to smooth out in here.
+        self.settings["wheel_speed"] = 12.0
+        spec = dict(self.ZOOM)
+        spec["wheel_curve"] = 1.0
+        self.use(spec)
+        at = []
+        for tick in range(600):
+            before = self.clicks()
+            self.tick(axes(y=150), dt=1 / 120.0)
+            if self.clicks() != before:
+                at.append(tick)
+        gaps = [b - a for a, b in zip(at, at[1:])]
+        self.assertGreater(len(gaps), 4)
+        self.assertLessEqual(max(gaps) - min(gaps), 1, "gaps: %s" % gaps)
+
     def test_a_brush_against_the_deadzone_is_not_worth_a_line(self):
         lines = []
         engine = sm.GestureEngine(

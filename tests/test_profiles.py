@@ -89,6 +89,20 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertEqual(browser["orbit"].axes["ry"], ("dx", -1.0))
 
+    def test_fusion_lifts_the_gentle_half_of_the_zoom_travel(self):
+        # A wheel cannot move by a fraction of a click, so under the global
+        # curve the gentle half of the puck's travel bought roughly two clicks
+        # a second in Fusion and felt dead. Straight is the shape that gives
+        # it a usable rhythm without making full deflection any faster.
+        profile = self.select("fusion360.exe")
+        self.assertEqual(profile.number("wheel_curve", self.profiles.settings), 1.0)
+        other = self.profiles.by_name("browser-threejs")
+        self.assertEqual(
+            other.number("wheel_curve", self.profiles.settings, 1.3),
+            float(self.profiles.settings["curve"]),
+            "a browser consumes every unit, so it keeps the global curve",
+        )
+
     def test_fusion_zooms_the_way_the_puck_is_pushed(self):
         # Direction is the hand's call, and the hand said the first one was
         # backwards: lifting the puck now zooms in.
