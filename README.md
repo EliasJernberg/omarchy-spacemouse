@@ -135,14 +135,41 @@ To see a window's class: `hyprctl activewindow -j | jq -r .class`.
 | profile                | matches                                        | type   |
 |------------------------|------------------------------------------------|--------|
 | `cad-native`           | KiCad, FreeCAD, Blender                        | native |
-| `fusion`               | `fusion360.exe`                                | mouse  |
+| `fusion`               | `fusion360.exe`                                | native |
+| `fusion-mouse-fallback`| nothing; pin it by name                        | mouse  |
 | `bambu`                | Bambu Studio, Orca Slicer, PrusaSlicer         | native |
 | `bambu-mouse-fallback` | nothing; pin it by name                        | mouse  |
 | `desktop-off`          | terminals (`org.omarchy.*` included), chat clients, Spotify, Obsidian | off |
 | `browser-threejs`      | Opera, Chromium, Chrome, Brave, Firefox, Zen   | mouse  |
 | `default`              | everything else                                | mouse  |
 
-Fusion has its own profile for three reasons.
+### Fusion is navigated by its own add-in
+
+`fusion` is a `native` profile, like the CAD applications above, but it gets
+there by a different route. Fusion under Wine cannot reach spacenavd and does
+not read raw HID either, so something has to bridge the gap.
+[bifrost](https://github.com/EliasJernberg/bifrost) is that bridge: a second
+small daemon reads the same spacenavd socket this one does and feeds a Python
+add-in running inside Fusion, which writes `Viewport.camera` over the API.
+
+That is worth a whole separate project because of the ceiling measured below:
+a pointer has two degrees of freedom, and Fusion ignores the wheel while a
+button is held, so an emulated puck can only ever do one thing at a time. The
+camera API has no such limit. Orbit, pan and zoom happen in the same push, and
+the pointer never moves, so Fusion never gets the chance to pick a pivot from
+under it.
+
+Both daemons can read the puck at once, because spacenavd serves every client.
+All that matters is that this one emits nothing while Fusion has focus, which
+is exactly what `native` means.
+
+**To go back to the mouse emulation**, swap the two match strings in
+`~/.config/omarchy-spacemouse/profiles.json`: give `fusion-mouse-fallback` the
+pattern `^fusion360\.exe$` and give `fusion` the impossible one. The file is
+hot-reloaded, so it takes effect as soon as it is saved. Everything from here
+to the next heading describes that fallback profile.
+
+#### The mouse emulation, kept as a fallback
 
 **It assumes the SOLIDWORKS mouse preset**, in Preferences > General > Mouse
 setup (pan, zoom, orbit). Measured in the running Fusion with that preset
@@ -185,7 +212,8 @@ The drag zoom is `"when": "idle"`: it starts when nothing else is running and
 can never take a running gesture over, so turning the model and pulling on the
 puck at the same time keeps turning the model. Zooming and orbiting at once
 needs a second channel into Fusion's camera, which means a Fusion-side add-in,
-not an input daemon.
+not an input daemon. That is what bifrost turned out to be, and why the shipped
+`fusion` profile is now `native`.
 
 Its FIT button is deliberately unbound, because no fit-to-view shortcut can be
 relied on under Wine. Fusion does fit on a middle double click, which the puck
@@ -213,7 +241,8 @@ around, then take hold of the puck.** That is the same thing you would do with
 a mouse in Fusion, and it is the only way to choose a pivot from outside the
 application. Real automatic centring (orbit around the model, wherever the
 pointer is) needs a plug-in on Fusion's own side that can call its camera API;
-nothing an input daemon does can reach that.
+nothing an input daemon does can reach that. bifrost does it by unioning the
+bounding boxes of everything visible and turning around the centre of that.
 
 The idle release and switch hold are there for the same reason. Every press of
 the orbit button is a fresh pivot choice, so the profile is deliberately slow
@@ -702,7 +731,8 @@ Then, in this order, only if something is actually wrong:
 5. **It feels like it lags**: lower `smoothing_ms` to 15, or 0.
 6. **Wrong direction**: flip the `gain` sign on that axis in the gesture, or
    set `axis_invert` if you want it flipped everywhere.
-7. **Fusion starts orbiting when you only asked it to pan**: tap shift on your
+7. **Fusion starts orbiting when you only asked it to pan** (mouse fallback
+   only, the shipped `fusion` profile is native): tap shift on your
    keyboard, twice if once is not enough. Fusion latches the modifier from a
    synthetic shift+middle drag and keeps treating the next middle drag as an
    orbit until a shift key event resynchronises it. It is reproducible with a
@@ -710,6 +740,13 @@ Then, in this order, only if something is actually wrong:
    whatever order the release is emitted in, single frame included, so it is
    not something the daemon can fix from out here. A physical shift, or any
    real keyboard traffic, clears it.
+8. **Fusion does not move at all**: the shipped `fusion` profile is `native`,
+   so this daemon emits nothing there on purpose. Either
+   [bifrost](https://github.com/EliasJernberg/bifrost) is not running
+   (`systemctl --user status bifrost.service`) or its add-in did not load
+   inside Fusion. To fall back to the mouse emulation instead, swap the match
+   strings with `fusion-mouse-fallback`, see [Fusion is navigated by its own
+   add-in](#fusion-is-navigated-by-its-own-add-in).
 
 ---
 

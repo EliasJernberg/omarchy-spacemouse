@@ -48,14 +48,34 @@ class ShippedDefaultsTest(unittest.TestCase):
                 "%s should be left to spacenavd, got %s" % (window_class, profile.name),
             )
 
-    def test_fusion_follows_the_solidworks_preset(self):
+    def test_fusion_is_left_to_its_own_addin(self):
+        # Fusion is navigated by the bifrost add-in, which writes
+        # Viewport.camera straight from the same spacenavd socket this daemon
+        # reads. That is a native profile: this daemon has to stay quiet, or
+        # the view would be driven twice. spacenavd serves every client, so
+        # both daemons reading the puck at once is fine.
+        profile = self.select("fusion360.exe")
+        self.assertEqual(profile.name, "fusion")
+        self.assertEqual(profile.type, "native")
+        self.assertEqual(profile.gestures, [])
+        self.assertIn("bifrost", profile.description)
+
+    def test_the_fusion_fallback_is_pinned_by_name_only(self):
+        # The mouse emulation is kept whole for the machines where bifrost is
+        # not installed, and parked behind a match nothing can ever be called.
+        profile = self.profiles.by_name("fusion-mouse-fallback")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.type, "mouse")
+        for window_class in ("fusion360.exe", "fusion-mouse-fallback", "__never__"):
+            self.assertNotEqual(self.select(window_class).name, profile.name)
+
+    def test_the_fusion_fallback_follows_the_solidworks_preset(self):
         # Measured in the running Fusion with that preset selected: the middle
         # button orbits, ctrl plus middle pans, shift plus middle is a
         # continuous drag zoom. The profile assumes that preset, and says so
         # in its description, because on Fusion's own default the middle
         # button pans and none of this lines up.
-        profile = self.select("fusion360.exe")
-        self.assertEqual(profile.name, "fusion")
+        profile = self.profiles.by_name("fusion-mouse-fallback")
         self.assertEqual(profile.type, "mouse")
         gestures = dict((g.name, g) for g in profile.gestures)
         self.assertEqual(gestures["orbit"].hold, [sm.BTN_MIDDLE])
@@ -67,12 +87,12 @@ class ShippedDefaultsTest(unittest.TestCase):
         )
         self.assertIn("SOLIDWORKS", profile.description)
 
-    def test_fusion_zooms_by_dragging_and_never_by_the_wheel(self):
+    def test_the_fusion_fallback_zooms_by_dragging_and_never_by_the_wheel(self):
         # Xwayland hands an application whole wheel clicks and nothing in
         # between, so wheel zoom was a staircase, and the drag zoom is the
         # answer. It may only start from idle: losing a running orbit because
         # the hand also lifted would be the worst outcome of all.
-        profile = self.select("fusion360.exe")
+        profile = self.profiles.by_name("fusion-mouse-fallback")
         gestures = dict((g.name, g) for g in profile.gestures)
         self.assertEqual(profile.wheel_gestures, [], "no wheel group runs here")
         self.assertEqual(gestures["zoom"].mode, "drag")
@@ -87,7 +107,9 @@ class ShippedDefaultsTest(unittest.TestCase):
         # is one flag away.
         with open(DEFAULT_PROFILES, encoding="utf-8") as handle:
             spec = json.load(handle)
-        fusion = [p for p in spec["profiles"] if p["name"] == "fusion"][0]
+        fusion = [p for p in spec["profiles"] if p["name"] == "fusion-mouse-fallback"][
+            0
+        ]
         step = fusion["gestures"]["zoom-step"]
         self.assertFalse(step["enabled"])
         self.assertEqual(step["when"], "drag")
@@ -99,11 +121,11 @@ class ShippedDefaultsTest(unittest.TestCase):
         self.assertGreater(fusion["gestures"]["zoom"]["axes"]["y"]["gain"], 0)
         self.assertLess(step["axes"]["y"]["gain"], 0)
 
-    def test_fusion_never_moves_the_pointer(self):
+    def test_the_fusion_fallback_never_moves_the_pointer(self):
         # Fusion reads the pointer to pick its orbit pivot, so warping it
         # makes the model jump away from what the user was looking at. Not
         # once, not at a clutch, and not at the window edge either.
-        profile = self.select("fusion360.exe")
+        profile = self.profiles.by_name("fusion-mouse-fallback")
         self.assertEqual(profile.cursor_mode, "keep")
         self.assertEqual(profile.clutch_mode, "off")
         self.assertFalse(profile.edge_guard)
@@ -112,14 +134,16 @@ class ShippedDefaultsTest(unittest.TestCase):
         for name in ("browser-threejs", "default"):
             self.assertTrue(self.profiles.by_name(name).edge_guard, name)
 
-    def test_fusion_turns_the_model_the_way_the_puck_turns(self):
+    def test_the_fusion_fallback_turns_the_model_the_way_the_puck_turns(self):
         # The sign is not derivable, it is what the hand on the puck says, and
         # the hand said the first one was mirrored: twisting the puck one way
         # turned the model the other. Fusion orbits the camera around a pivot
         # while a Three.js viewer drags the model itself, so the same puck
         # axis genuinely needs opposite signs in the two profiles. Pinned here
         # so a tidy-up does not quietly swap it back.
-        fusion = dict((g.name, g) for g in self.select("fusion360.exe").gestures)
+        fusion = dict(
+            (g.name, g) for g in self.profiles.by_name("fusion-mouse-fallback").gestures
+        )
         self.assertEqual(fusion["orbit"].axes["ry"], ("dx", 1.0))
         self.assertEqual(fusion["orbit"].axes["rx"], ("dy", 1.0))
         browser = dict(
@@ -130,13 +154,17 @@ class ShippedDefaultsTest(unittest.TestCase):
     def test_lifting_the_puck_zooms_in(self):
         # Measured in Fusion: with shift held, dragging the pointer down zooms
         # in and dragging it up zooms out. Lifting the puck is +y, so +y has
-        # to become a downward drag, which is a positive gain on dy.
-        zoom = dict((g.name, g) for g in self.select("fusion360.exe").gestures)["zoom"]
+        # to become a downward drag, which is a positive gain on dy. bifrost
+        # was given the same direction when it took over, so the puck means
+        # the same thing whichever backend is driving Fusion.
+        zoom = dict(
+            (g.name, g) for g in self.profiles.by_name("fusion-mouse-fallback").gestures
+        )["zoom"]
         self.assertEqual(zoom.axes["y"], ("dy", 1.0))
         self.assertLess(zoom.speed, 0.5, "a drag zoom at pointer_speed would bolt")
 
-    def test_fusion_is_patient(self):
-        profile = self.select("fusion360.exe")
+    def test_the_fusion_fallback_is_patient(self):
+        profile = self.profiles.by_name("fusion-mouse-fallback")
         settings = self.profiles.settings
         # A short pause must not release the button: the next press would let
         # Fusion choose a new pivot.
@@ -156,10 +184,12 @@ class ShippedDefaultsTest(unittest.TestCase):
                 float(settings["idle_release_ms"]),
             )
 
-    def test_fusion_has_no_fit_key_bound(self):
+    def test_the_fusion_fallback_has_no_fit_key_bound(self):
         # There is no shortcut under Wine that can be relied on, so the FIT
-        # button is deliberately inert rather than wrong.
-        profile = self.select("fusion360.exe")
+        # button is deliberately inert rather than wrong. With the bifrost
+        # add-in driving Fusion, button 5 calls viewport.fit() over the API
+        # and needs no key at all.
+        profile = self.profiles.by_name("fusion-mouse-fallback")
         self.assertEqual(profile.fit_key, [])
         self.assertIn(5, profile.buttons)
 
